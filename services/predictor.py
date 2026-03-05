@@ -1,6 +1,5 @@
 import random
 
-
 def predict_match(home_team, away_team):
 
     home_win = round(random.uniform(0.40, 0.60), 2)
