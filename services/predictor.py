@@ -22,7 +22,7 @@ def calculate_over_under(matrix):
 
 def predict_match(home_team, away_team):
 
-    # valores fictícios de ataque (temporário)
+    # valores temporários de xG
     home_xg = round(random.uniform(1.2, 2.0), 2)
     away_xg = round(random.uniform(0.8, 1.6), 2)
 
@@ -32,12 +32,12 @@ def predict_match(home_team, away_team):
 
     over25, under25 = calculate_over_under(matrix)
 
-    return {
+    result = {
         "home_team": home_team,
         "away_team": away_team,
         "expected_goals": {
-            "home": round(home_xg, 2),
-            "away": round(away_xg, 2)
+            "home": home_xg,
+            "away": away_xg
         },
         "probabilities": {
             "home_win": round(home_win, 3),
@@ -49,3 +49,5 @@ def predict_match(home_team, away_team):
             "under": round(under25, 3)
         }
     }
+
+    return result
