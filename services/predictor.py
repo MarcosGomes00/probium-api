@@ -24,20 +24,21 @@ def signal_strength(value):
 
 def calculate_over_under(matrix):
 
-    over = 0
-    under = 0
+    over25 = 0
+    under25 = 0
 
     for home_goals in range(len(matrix)):
         for away_goals in range(len(matrix)):
 
-            total_goals = home_goals + away_goals
+            total = home_goals + away_goals
+            prob = matrix[home_goals][away_goals]
 
-            if total_goals > 2:
-                over += matrix[home_goals][away_goals]
+            if total > 2:
+                over25 += prob
             else:
-                under += matrix[home_goals][away_goals]
+                under25 += prob
 
-    return over, under
+    return over25, under25
 
 
 def calculate_btts(matrix):
@@ -65,22 +66,42 @@ def get_top_scores(matrix):
     for home_goals in range(len(matrix)):
         for away_goals in range(len(matrix)):
 
-            prob = matrix[home_goals][away_goals]
-
             scores.append({
                 "score": f"{home_goals}-{away_goals}",
-                "prob": prob
+                "prob": matrix[home_goals][away_goals]
             })
 
     scores_sorted = sorted(scores, key=lambda x: x["prob"], reverse=True)
 
-    return scores_sorted[:3]
+    return scores_sorted[:5]
+
+
+def elo_adjustment():
+
+    return random.uniform(-0.2, 0.2)
+
+
+def form_adjustment():
+
+    return random.uniform(-0.15, 0.15)
 
 
 def predict_match(home_team, away_team):
 
-    home_xg = round(random.uniform(1.2, 2.0), 2)
-    away_xg = round(random.uniform(0.8, 1.6), 2)
+    # base xG
+    home_xg = random.uniform(1.4, 1.9)
+    away_xg = random.uniform(1.0, 1.6)
+
+    # ajuste elo
+    home_xg += elo_adjustment()
+    away_xg -= elo_adjustment()
+
+    # ajuste forma
+    home_xg += form_adjustment()
+    away_xg += form_adjustment()
+
+    home_xg = round(max(home_xg, 0.5), 2)
+    away_xg = round(max(away_xg, 0.5), 2)
 
     matrix = calculate_goal_matrix(home_xg, away_xg)
 
@@ -92,10 +113,11 @@ def predict_match(home_team, away_team):
 
     top_scores = get_top_scores(matrix)
 
+    strongest = max(home_win, draw, away_win)
+
     result = {
 
-        "home_team": home_team,
-        "away_team": away_team,
+        "match": f"{home_team} vs {away_team}",
 
         "expected_goals": {
             "home": home_xg,
@@ -103,32 +125,23 @@ def predict_match(home_team, away_team):
         },
 
         "probabilities": {
-            "home_win": round(home_win, 3),
-            "draw": round(draw, 3),
-            "away_win": round(away_win, 3)
-        },
-
-        "signals": {
 
             "home_win": {
                 "prob": round(home_win, 3),
                 "bar": probability_bar(home_win),
-                "strength": signal_strength(home_win),
-                "emoji": "🏠"
+                "strength": signal_strength(home_win)
             },
 
             "draw": {
                 "prob": round(draw, 3),
                 "bar": probability_bar(draw),
-                "strength": signal_strength(draw),
-                "emoji": "🤝"
+                "strength": signal_strength(draw)
             },
 
             "away_win": {
                 "prob": round(away_win, 3),
                 "bar": probability_bar(away_win),
-                "strength": signal_strength(away_win),
-                "emoji": "✈️"
+                "strength": signal_strength(away_win)
             }
 
         },
@@ -146,7 +159,10 @@ def predict_match(home_team, away_team):
         "top_scores": [
             {"score": s["score"], "prob": round(s["prob"], 3)}
             for s in top_scores
-        ]
+        ],
+
+        "model": "Poisson + Elo + Form"
+
     }
 
     return result
