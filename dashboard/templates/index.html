@@ -6,8 +6,6 @@
 
 <title>⚽ PROBIUM AI</title>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
 <style>
 
 body{
@@ -36,95 +34,29 @@ border-radius:10px;
 
 <h1>⚽ PROBIUM AI</h1>
 
-<h3>📊 Plataforma de Análise Profissional</h3>
+<h3>📊 Scanner de Jogos do Dia</h3>
 
 
-<div class="card">
-
-<h2 id="match">⚽ Carregando...</h2>
-
-<p id="xg"></p>
-
-</div>
-
+{% for game in games %}
 
 <div class="card">
 
-<h3>📈 Probabilidades</h3>
+<h2>⚽ {{game.match}}</h2>
 
-<canvas id="probChart"></canvas>
+<p>📊 xG Casa 🏠 {{game.expected_goals.home}}</p>
+<p>📊 xG Fora ✈️ {{game.expected_goals.away}}</p>
+
+<p>🏠 Casa {{game.probabilities.home_win.prob}}</p>
+<p>🤝 Empate {{game.probabilities.draw.prob}}</p>
+<p>✈️ Fora {{game.probabilities.away_win.prob}}</p>
+
+<p>💰 EV Casa {{game.value_bet.home_ev}}</p>
+<p>💰 EV Empate {{game.value_bet.draw_ev}}</p>
+<p>💰 EV Fora {{game.value_bet.away_ev}}</p>
 
 </div>
 
-
-<div class="card">
-
-<h3>💰 Scanner Value Bet</h3>
-
-<p id="value"></p>
-
-</div>
-
-
-<script>
-
-fetch("/data")
-
-.then(res=>res.json())
-
-.then(data=>{
-
-document.getElementById("match").innerText="⚽ "+data.match
-
-document.getElementById("xg").innerText=
-
-"📊 xG Casa 🏠 "+data.expected_goals.home+
-" | xG Fora ✈️ "+data.expected_goals.away
-
-
-
-const ctx=document.getElementById("probChart")
-
-new Chart(ctx,{
-
-type:"bar",
-
-data:{
-
-labels:["🏠 Casa","🤝 Empate","✈️ Fora"],
-
-datasets:[{
-
-label:"Probabilidades",
-
-data:[
-
-data.probabilities.home_win.prob,
-
-data.probabilities.draw.prob,
-
-data.probabilities.away_win.prob
-
-],
-
-backgroundColor:["#22c55e","#facc15","#ef4444"]
-
-}]
-
-}
-
-})
-
-
-document.getElementById("value").innerText=
-
-"💰 Casa EV: "+data.value_bet.home_ev+
-" | 🤝 Empate EV: "+data.value_bet.draw_ev+
-" | ✈️ Fora EV: "+data.value_bet.away_ev
-
-})
-
-</script>
+{% endfor %}
 
 </body>
 

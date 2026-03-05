@@ -1,37 +1,20 @@
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template
 
-from services.predictor import predict_match
-from services.value_bet import find_value_bet
+from services.auto_analyzer import analyze_today_matches
 
 
 app = Flask(__name__, template_folder="templates")
 
 
 @app.route("/")
-def home():
+def dashboard():
 
-    return render_template("index.html")
+    games = analyze_today_matches()
 
-
-@app.route("/data")
-def data():
-
-    prediction = predict_match(
-        "Barcelona",
-        "Real Madrid"
+    return render_template(
+        "index.html",
+        games=games
     )
-
-    value = find_value_bet(
-
-        prediction["probabilities"]["home_win"]["prob"],
-        prediction["probabilities"]["draw"]["prob"],
-        prediction["probabilities"]["away_win"]["prob"]
-
-    )
-
-    prediction["value_bet"] = value
-
-    return jsonify(prediction)
 
 
 if __name__ == "__main__":
