@@ -1,0 +1,15 @@
+
+flask
+gunicorn
+python-dotenv
+flask-cors
+flask-jwt-extended
+sqlalchemy
+psycopg2-binary
+apscheduler
+requests
+pandas
+numpy
+scikit-learn
+python-telegram-bot
+pytz
