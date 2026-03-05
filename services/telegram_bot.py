@@ -1,42 +1,16 @@
+import requests
+import os
 
-from telegram import Bot
-import logging
+BOT_TOKEN = os.getenv("8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A")
+GROUP_ID = os.getenv("-1003814625223")
 
-logger = logging.getLogger(__name__)
+def send_message(text):
 
-class TelegramService:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    def __init__(self, token, group):
-        self.bot = Bot(token=token)
-        self.group = group
+    payload = {
+        "chat_id": GROUP_ID,
+        "text": text
+    }
 
-    async def send_top10(self, analyses):
-
-        msg = "🏆 TOP 10 PROBIUM - ANÁLISES DO DIA\n\n"
-
-        for i,a in enumerate(analyses,1):
-
-            msg += f"""
-{i}º ENTRADA
-
-⚽ {a['home_team']} vs {a['away_team']}
-🏆 {a['league']}
-
-🎯 CALL: {a['market']}
-💰 ODD: {a['odds']}
-📊 Prob: {a['probability_ai']}%
-⚡ Confiança: {a['confidence']}
-"""
-
-        await self.bot.send_message(self.group,msg)
-
-telegram_service = None
-
-def init_telegram(app):
-
-    global telegram_service
-
-    telegram_service = TelegramService(
-        app.config["BOT1_TOKEN"],
-        app.config["TELEGRAM_GROUP_ID"]
-    )
+    requests.post(url, json=payload)
