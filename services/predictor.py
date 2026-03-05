@@ -20,6 +20,25 @@ def calculate_over_under(matrix):
     return over, under
 
 
+def get_top_scores(matrix):
+
+    scores = []
+
+    for home_goals in range(len(matrix)):
+        for away_goals in range(len(matrix)):
+
+            prob = matrix[home_goals][away_goals]
+
+            scores.append({
+                "score": f"{home_goals}-{away_goals}",
+                "prob": prob
+            })
+
+    scores_sorted = sorted(scores, key=lambda x: x["prob"], reverse=True)
+
+    return scores_sorted[:3]
+
+
 def predict_match(home_team, away_team):
 
     # valores temporários de xG
@@ -31,6 +50,8 @@ def predict_match(home_team, away_team):
     home_win, draw, away_win = calculate_match_probabilities(matrix)
 
     over25, under25 = calculate_over_under(matrix)
+
+    top_scores = get_top_scores(matrix)
 
     result = {
         "home_team": home_team,
@@ -47,7 +68,11 @@ def predict_match(home_team, away_team):
         "over_under_2_5": {
             "over": round(over25, 3),
             "under": round(under25, 3)
-        }
+        },
+        "top_scores": [
+            {"score": s["score"], "prob": round(s["prob"], 3)}
+            for s in top_scores
+        ]
     }
 
     return result
