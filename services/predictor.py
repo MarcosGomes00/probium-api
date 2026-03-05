@@ -1,48 +1,48 @@
-from services.database import db
+from services.poisson_model import calculate_goal_matrix, calculate_match_probabilities
+import random
 
+def probability_bar(value):
+    filled = int(value * 10)
+    empty = 10 - filled
+    return "█" * filled + "░" * empty
 
-class Prediction(db.Model):
+def predict_match(home_team, away_team):
 
-    __tablename__ = "predictions"
+    home_xg = round(random.uniform(1.4, 2.0), 2)
+    away_xg = round(random.uniform(0.9, 1.6), 2)
 
-    id = db.Column(db.Integer, primary_key=True)
+    matrix = calculate_goal_matrix(home_xg, away_xg)
 
-    # ⚽ Partida analisada
-    match = db.Column(db.String(120))
+    home_win, draw, away_win = calculate_match_probabilities(matrix)
 
-    # 📊 Expected Goals
-    home_xg = db.Column(db.Float)
-    away_xg = db.Column(db.Float)
+    result = {
 
-    # 📈 Probabilidades
-    home_win = db.Column(db.Float)
-    draw = db.Column(db.Float)
-    away_win = db.Column(db.Float)
+        "match": f"{home_team} vs {away_team}",
 
-    # 🕒 Data da previsão
-    created_at = db.Column(db.DateTime, server_default=db.func.now())
+        "expected_goals": {
+            "home": home_xg,
+            "away": away_xg
+        },
 
-    def to_dict(self):
+        "probabilities": {
 
-        return {
-
-            "id": self.id,
-
-            "match": f"⚽ {self.match}",
-
-            "expected_goals": {
-                "home": f"🏠 {self.home_xg}",
-                "away": f"✈️ {self.away_xg}"
+            "home_win": {
+                "prob": round(home_win,3),
+                "bar": probability_bar(home_win)
             },
 
-            "probabilities": {
-
-                "home_win": f"🏠 Vitória Casa: {round(self.home_win*100,1)}%",
-
-                "draw": f"🤝 Empate: {round(self.draw*100,1)}%",
-
-                "away_win": f"✈️ Vitória Fora: {round(self.away_win*100,1)}%"
+            "draw": {
+                "prob": round(draw,3),
+                "bar": probability_bar(draw)
             },
 
-            "created_at": f"🕒 {self.created_at}"
+            "away_win": {
+                "prob": round(away_win,3),
+                "bar": probability_bar(away_win)
+            }
+
         }
+
+    }
+
+    return result

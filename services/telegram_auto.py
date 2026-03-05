@@ -5,18 +5,26 @@ from services.auto_analyzer import analyze_today_matches
 
 
 BOT_TOKEN = os.getenv("BOT1_TOKEN")
-GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
+CHAT_ID = os.getenv("TELEGRAM_GROUP_ID")
 
 
-def send_daily_predictions():
+def send_value_alerts():
 
-    predictions = analyze_today_matches()
+    games = analyze_today_matches()
 
-    for game in predictions:
+    for game in games:
 
-        message = f"""
+        ev_home = game["value_bet"]["home_ev"]
+        ev_draw = game["value_bet"]["draw_ev"]
+        ev_away = game["value_bet"]["away_ev"]
 
-⚽ PROBIUM AI
+        # envia alerta apenas se EV positivo
+
+        if ev_home > 0 or ev_draw > 0 or ev_away > 0:
+
+            message = f"""
+
+⚽ PROBIUM VALUE BET ALERT
 
 {game['match']}
 
@@ -25,25 +33,27 @@ def send_daily_predictions():
 ✈️ {game['expected_goals']['away']}
 
 📈 Probabilidades
+🏠 Casa {game['probabilities']['home_win']['prob']}
+🤝 Empate {game['probabilities']['draw']['prob']}
+✈️ Fora {game['probabilities']['away_win']['prob']}
 
-🏠 Casa: {game['probabilities']['home_win']['prob']}
-🤝 Empate: {game['probabilities']['draw']['prob']}
-✈️ Fora: {game['probabilities']['away_win']['prob']}
+💰 Value Bet
 
-📊 Over 2.5
-🔥 {game['over_under_2_5']['over']}
+🏠 Casa EV {ev_home}
+🤝 Empate EV {ev_draw}
+✈️ Fora EV {ev_away}
 
 """
 
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-        requests.post(
+            requests.post(
 
-            url,
+                url,
 
-            json={
-                "chat_id": GROUP_ID,
-                "text": message
-            }
+                json={
+                    "chat_id": CHAT_ID,
+                    "text": message
+                }
 
-        )
+            )
