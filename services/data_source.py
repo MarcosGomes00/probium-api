@@ -1,59 +1,64 @@
 import requests
+from datetime import datetime
 from config import Config
 
 
+API_KEY = Config.API_FOOTBALL_KEY
+
+BASE_URL = "https://v3.football.api-sports.io"
+
+headers = {
+    "x-apisports-key": API_KEY
+}
+
+
+# ligas principais
 LEAGUES = [
-    "soccer_epl",
-    "soccer_spain_la_liga",
-    "soccer_italy_serie_a",
-    "soccer_germany_bundesliga",
-    "soccer_brazil_campeonato"
+    39,   # Premier League
+    140,  # La Liga
+    135,  # Serie A
+    78,   # Bundesliga
+    61    # Ligue 1
 ]
 
 
-def get_matches_by_date(date):
+def get_matches_today():
+
+    today = datetime.now().strftime("%Y-%m-%d")
 
     matches = []
 
     for league in LEAGUES:
 
-        url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
+        url = f"{BASE_URL}/fixtures"
 
         params = {
-            "apiKey": Config.ODDS_API_KEY,
-            "regions": "eu",
-            "markets": "h2h",
-            "dateFormat": "iso"
+            "date": today,
+            "league": league,
+            "season": 2024
         }
 
         try:
 
-            r = requests.get(url, params=params, timeout=10)
-
-            if r.status_code != 200:
-                print("Erro:", league, r.status_code)
-                continue
+            r = requests.get(url, headers=headers, params=params, timeout=10)
 
             data = r.json()
 
-            for game in data:
+            fixtures = data.get("response", [])
 
-                commence = game.get("commence_time", "")
-
-                if date not in commence:
-                    continue
+            for f in fixtures:
 
                 matches.append({
-                    "home": game["home_team"],
-                    "away": game["away_team"],
-                    "league": league,
-                    "kickoff": commence
+                    "home": f["teams"]["home"]["name"],
+                    "away": f["teams"]["away"]["name"],
+                    "home_id": f["teams"]["home"]["id"],
+                    "away_id": f["teams"]["away"]["id"],
+                    "league": f["league"]["name"],
+                    "time": f["fixture"]["date"]
                 })
 
         except Exception as e:
 
-            print("Erro coletando jogos:", e)
-
-    print(f"⚽ {len(matches)} jogos encontrados para {date}")
+            print("Erro API football:", e)
 
     return matches
