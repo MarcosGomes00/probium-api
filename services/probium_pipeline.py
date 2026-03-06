@@ -1,29 +1,7 @@
-import json
-import random
-from datetime import datetime
-
 from services.data_source import get_matches_today
-from services.odds_collector import get_odds
-from services.poisson_model import over25_prob
+from services.poisson_model import over25_prob, btts_prob
 from services.telegram_bot import send_bet_message
-
-
-HISTORY_FILE = "bets_history.json"
-
-
-def load_history():
-
-    try:
-        with open(HISTORY_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
-
-
-def save_history(data):
-
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+import random
 
 
 def run_pipeline():
@@ -31,68 +9,72 @@ def run_pipeline():
     print("🔎 PROBIUM analisando jogos...")
 
     matches = get_matches_today()
-    odds = get_odds()
 
-    history = load_history()
+    print(f"⚽ {len(matches)} jogos encontrados")
 
     bets = []
 
-    for match in matches:
+    for m in matches:
 
-        home = match["home"]
-        away = match["away"]
+        home = m["home"]
+        away = m["away"]
 
-        odd_data = next((o for o in odds if o["home"] == home and o["away"] == away), None)
+        # simulando força ofensiva
+        home_attack = random.uniform(1.2, 2.4)
+        away_attack = random.uniform(1.0, 2.2)
 
-        if not odd_data:
-            continue
+        over_prob = over25_prob(home_attack, away_attack)
+        btts = btts_prob(home_attack, away_attack)
+        under_prob = 1 - over_prob
 
-        odd = odd_data["odd"]
+        market = None
+        prob = 0
 
-        home_attack = random.uniform(1.2, 2.2)
-        away_attack = random.uniform(1.0, 2.0)
+        if over_prob > 0.65:
 
-        prob = over25_prob(home_attack, away_attack)
+            market = "OVER 2.5"
+            prob = over_prob
 
-        ev = (prob * odd) - 1
+        elif btts > 0.65:
 
-        if ev > 0.05:
+            market = "BTTS SIM"
+            prob = btts
 
-            bet = {
-                "date": datetime.utcnow().isoformat(),
+        elif under_prob > 0.65:
+
+            market = "UNDER 2.5"
+            prob = under_prob
+
+        if market:
+
+            bets.append({
                 "home": home,
                 "away": away,
-                "market": "over_2.5",
-                "odd": odd,
-                "probability": round(prob, 2),
-                "ev": round(ev, 3),
-                "status": "pending"
-            }
+                "market": market,
+                "prob": prob
+            })
 
-            history.append(bet)
-            bets.append(bet)
+    bets = sorted(bets, key=lambda x: x["prob"], reverse=True)
 
-    save_history(history)
+    top = bets[:10]
 
-    if not bets:
+    if not top:
 
-        print("⚠ nenhuma aposta encontrada")
+        print("⚠ Nenhuma aposta encontrada")
         return
 
-    for bet in bets[:3]:
+    for b in top:
 
-        message = f"""
+        msg = f"""
 🤖 PROBIUM AI
 
-⚽ {bet['home']} vs {bet['away']}
+⚽ {b['home']} vs {b['away']}
 
-🎯 Entrada: Over 2.5
+🎯 Entrada: {b['market']}
 
-📊 Probabilidade: {bet['probability']*100:.1f}%
-💰 Odd: {bet['odd']}
-📈 EV: {bet['ev']}
+📊 Probabilidade: {round(b['prob']*100,1)}%
 """
 
-        send_bet_message(message)
+        send_bet_message(msg)
 
-        print("✅ aposta enviada:", bet["home"], "vs", bet["away"])
+        print("✅ enviada:", b["home"], "vs", b["away"])
