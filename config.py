@@ -1,30 +1,11 @@
-import os
-from dotenv import load_dotenv
-
-# carregar variáveis do .env
-load_dotenv()
-
 class Config:
 
-    SECRET_KEY = os.getenv("SECRET_KEY", "probium-secret")
+    # APIs
+    ODDS_API_KEY = "6a1c0078b3ed09b42fbacee8f07e7cc3"
+    API_FOOTBALL_KEY = "a1b4dc55ed3248a09e8b8582e4dbc0c9"
 
-    DATABASE_URL = os.getenv("DATABASE_URL")
+    # TELEGRAM
+    TELEGRAM_BOT_1 = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
+    TELEGRAM_BOT_2 = "8185027087:AAH1JQJKtlWy_oUQpAvqvHEsFIVOK3ScYBc"
 
-    if DATABASE_URL:
-        SQLALCHEMY_DATABASE_URI = DATABASE_URL
-    else:
-        SQLALCHEMY_DATABASE_URI = "sqlite:///probium.db"
-
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-
-    BOT1_TOKEN = os.getenv("BOT1_TOKEN")
-    BOT2_TOKEN = os.getenv("BOT2_TOKEN")
-
-    TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
-
-    API_KEY = os.getenv("API_KEY")
-
-    ADMIN_USER = os.getenv("ADMIN_USER")
-    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-
-    TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")
+    TELEGRAM_CHAT_ID = "-1003814625223"

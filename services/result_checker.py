@@ -1,73 +1,39 @@
 import json
-import requests
+import random
 
 
-FILE_PATH = "bets_history.json"
-
-
-def load_bets():
-
-    try:
-
-        with open(FILE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except:
-        return []
-
-
-def save_bets(data):
-
-    with open(FILE_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+HISTORY_FILE = "bets_history.json"
 
 
 def check_results():
 
-    bets = load_bets()
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            bets = json.load(f)
+    except:
+        bets = []
 
     updated = False
 
     for bet in bets:
 
-        if bet.get("status") != "pending":
+        # se já foi verificado pula
+        if bet.get("checked"):
             continue
 
-        home = bet["home"]
-        away = bet["away"]
+        # simulação de resultado (depois vamos usar API real)
+        outcome = random.choice(["GREEN", "RED"])
 
-        try:
+        bet["result"] = outcome
+        bet["checked"] = True
 
-            # API de resultados (exemplo simples)
-            url = f"https://api.sampleapis.com/futurama/episodes"
-
-            response = requests.get(url)
-
-            if response.status_code != 200:
-                continue
-
-            # simulação de resultado
-            home_goals = 2
-            away_goals = 1
-
-            bet_type = bet["market"]
-
-            if bet_type == "home_win" and home_goals > away_goals:
-                bet["status"] = "green"
-
-            elif bet_type == "away_win" and away_goals > home_goals:
-                bet["status"] = "green"
-
-            elif bet_type == "draw" and home_goals == away_goals:
-                bet["status"] = "green"
-
-            else:
-                bet["status"] = "red"
-
-            updated = True
-
-        except:
-            continue
+        updated = True
 
     if updated:
-        save_bets(bets)
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(bets, f, indent=2)
+
+        print("✅ Resultados atualizados no histórico")
+
+    else:
+        print("ℹ️ Nenhuma aposta nova para verificar")

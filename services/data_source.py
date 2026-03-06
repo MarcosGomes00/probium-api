@@ -1,49 +1,44 @@
 import requests
-from datetime import datetime
+from bs4 import BeautifulSoup
 
+URL = "https://www.flashscore.com/football/"
 
-API_KEY = "a1b4dc55ed3248a09e8b8582e4dbc0c9"
-BASE_URL = "https://api.football-data.org/v4/matches"
+def get_matches_today():
 
-
-def get_matches():
+    matches = []
 
     headers = {
-        "X-Auth-Token": API_KEY
+        "User-Agent": "Mozilla/5.0"
     }
 
     try:
 
-        r = requests.get(BASE_URL, headers=headers)
+        response = requests.get(URL, headers=headers)
 
-        data = r.json()
+        soup = BeautifulSoup(response.text, "html.parser")
 
-    except:
+        games = soup.select(".event__match")
 
-        return []
+        for game in games[:30]:
 
+            try:
 
-    matches = []
+                home = game.select_one(".event__participant--home").text.strip()
+                away = game.select_one(".event__participant--away").text.strip()
 
-    for m in data.get("matches", []):
+                matches.append({
+                    "home": home,
+                    "away": away,
+                    "league": "Football"
+                })
 
-        home = m["homeTeam"]["name"]
-        away = m["awayTeam"]["name"]
+            except:
+                continue
 
-        league = m["competition"]["name"]
+    except Exception as e:
 
-        kickoff = m["utcDate"]
+        print("❌ Erro ao buscar jogos:", e)
 
-        matches.append({
-
-            "home": home,
-            "away": away,
-            "league": league,
-            "kickoff": kickoff,
-
-            "elo_home": 1700,
-            "elo_away": 1700
-
-        })
+    print(f"⚽ {len(matches)} jogos encontrados")
 
     return matches

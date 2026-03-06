@@ -1,11 +1,12 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
+import pytz
 
 from services.probium_pipeline import run_pipeline
 from services.result_checker import check_results
 
 
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(timezone="UTC")
 
 
 def run_scanner():
@@ -16,7 +17,7 @@ def run_scanner():
 
         run_pipeline()
 
-        print("✅ Scanner finalizado", datetime.now())
+        print("✅ Scanner finalizado", datetime.utcnow())
 
     except Exception as e:
 
@@ -31,7 +32,7 @@ def run_results():
 
         check_results()
 
-        print("✅ Resultados atualizados", datetime.now())
+        print("✅ Resultados atualizados", datetime.utcnow())
 
     except Exception as e:
 
@@ -40,15 +41,56 @@ def run_results():
 
 def start_scheduler(app):
 
+    if scheduler.running:
+        return
+
     print("\n🚀 Scheduler iniciado - PROBIUM AI")
 
     # scans principais do dia
-    scheduler.add_job(run_scanner, "cron", hour=9, minute=0)
-    scheduler.add_job(run_scanner, "cron", hour=14, minute=0)
-    scheduler.add_job(run_scanner, "cron", hour=18, minute=0)
-    scheduler.add_job(run_scanner, "cron", hour=21, minute=0)
+    scheduler.add_job(
+        run_scanner,
+        "cron",
+        hour=9,
+        minute=0,
+        id="scan_1",
+        replace_existing=True
+    )
+
+    scheduler.add_job(
+        run_scanner,
+        "cron",
+        hour=14,
+        minute=0,
+        id="scan_2",
+        replace_existing=True
+    )
+
+    scheduler.add_job(
+        run_scanner,
+        "cron",
+        hour=18,
+        minute=0,
+        id="scan_3",
+        replace_existing=True
+    )
+
+    scheduler.add_job(
+        run_scanner,
+        "cron",
+        hour=21,
+        minute=0,
+        id="scan_4",
+        replace_existing=True
+    )
 
     # verificação de resultados
-    scheduler.add_job(run_results, "cron", hour=23, minute=30)
+    scheduler.add_job(
+        run_results,
+        "cron",
+        hour=23,
+        minute=30,
+        id="results_check",
+        replace_existing=True
+    )
 
     scheduler.start()

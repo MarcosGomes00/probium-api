@@ -1,129 +1,98 @@
+import json
 import random
+from datetime import datetime
 
-from services.data_source import get_matches
-from services.elo_engine import elo_probability
-from services.probium_engine import calculate_ev, calculate_edge
-from services.poisson_model import predict_score, over25_prob, btts_prob
-from services.confidence_engine import confidence_level
-from services.ranking_engine import rank_bets
-from services.history_engine import record_bets
-from services.telegram_engine import send_message
-from services.historical_engine import HistoricalEngine
+from services.data_source import get_matches_today
+from services.odds_collector import get_odds
+from services.poisson_model import over25_prob
+from services.telegram_bot import send_bet_message
 
 
-engine = HistoricalEngine()
+HISTORY_FILE = "bets_history.json"
 
 
-def best_market(prob_home, prob_away, prob_draw, over25, btts):
+def load_history():
 
-    markets = []
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
 
-    markets.append(("HOME WIN", prob_home))
-    markets.append(("AWAY WIN", prob_away))
-    markets.append(("DRAW", prob_draw))
 
-    markets.append(("OVER 2.5", over25))
-    markets.append(("UNDER 2.5", 1 - over25))
+def save_history(data):
 
-    markets.append(("BTTS YES", btts))
-    markets.append(("BTTS NO", 1 - btts))
-
-    best = None
-    best_ev = -999
-
-    for name, prob in markets:
-
-        odd = round((1 / prob) * random.uniform(1.05, 1.12), 2)
-
-        ev = calculate_ev(prob, odd)
-
-        if ev > best_ev:
-
-            best_ev = ev
-            best = (name, prob, odd, ev)
-
-    return best
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 def run_pipeline():
 
-    matches = get_matches()
+    print("🔎 PROBIUM analisando jogos...")
+
+    matches = get_matches_today()
+    odds = get_odds()
+
+    history = load_history()
 
     bets = []
 
-    for m in matches:
+    for match in matches:
 
-        elo_prob = elo_probability(
-            m["elo_home"],
-            m["elo_away"]
-        )
+        home = match["home"]
+        away = match["away"]
 
-        poisson = over25_prob()
+        odd_data = next((o for o in odds if o["home"] == home and o["away"] == away), None)
 
-        prob_home = engine.combined_probability(
-            elo_prob,
-            poisson,
-            m["home"],
-            m["away"]
-        )
-
-        prob_away = 1 - prob_home
-
-        prob_draw = 0.25
-
-        score = predict_score(
-            m["elo_home"],
-            m["elo_away"]
-        )
-
-        over25 = over25_prob()
-
-        btts = btts_prob()
-
-        market, prob, odd, ev = best_market(
-            prob_home,
-            prob_away,
-            prob_draw,
-            over25,
-            btts
-        )
-
-        edge = calculate_edge(prob, odd)
-
-        if prob < 0.55 or ev < 0.02:
+        if not odd_data:
             continue
 
-        conf, stake = confidence_level(prob, ev)
+        odd = odd_data["odd"]
 
-        bets.append({
+        home_attack = random.uniform(1.2, 2.2)
+        away_attack = random.uniform(1.0, 2.0)
 
-            "home": m["home"],
-            "away": m["away"],
-            "league": m["league"],
-            "kickoff": m["kickoff"],
+        prob = over25_prob(home_attack, away_attack)
 
-            "market": market,
+        ev = (prob * odd) - 1
 
-            "odd": odd,
-            "prob": prob,
-            "ev": ev,
-            "edge": edge,
+        if ev > 0.05:
 
-            "score": f"{score[0]}-{score[1]}",
-            "over25": over25,
-            "btts": btts,
+            bet = {
+                "date": datetime.utcnow().isoformat(),
+                "home": home,
+                "away": away,
+                "market": "over_2.5",
+                "odd": odd,
+                "probability": round(prob, 2),
+                "ev": round(ev, 3),
+                "status": "pending"
+            }
 
-            "confidence": conf,
-            "stake": stake
+            history.append(bet)
+            bets.append(bet)
 
-        })
+    save_history(history)
 
-    ranked = rank_bets(bets)
+    if not bets:
 
-    top = ranked[:5]
+        print("⚠ nenhuma aposta encontrada")
+        return
 
-    record_bets(top)
+    for bet in bets[:3]:
 
-    send_message(top)
+        message = f"""
+🤖 PROBIUM AI
 
-    return top
+⚽ {bet['home']} vs {bet['away']}
+
+🎯 Entrada: Over 2.5
+
+📊 Probabilidade: {bet['probability']*100:.1f}%
+💰 Odd: {bet['odd']}
+📈 EV: {bet['ev']}
+"""
+
+        send_bet_message(message)
+
+        print("✅ aposta enviada:", bet["home"], "vs", bet["away"])

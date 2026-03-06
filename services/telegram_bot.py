@@ -1,30 +1,26 @@
-import os
 import requests
+from config import Config
 
 
-BOT_TOKEN = os.getenv("BOT1_TOKEN")
-GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
+def send_bet_message(text):
 
-
-def send_message(text):
-
-    if not BOT_TOKEN or not GROUP_ID:
-        print("Telegram not configured")
-        return
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_1}/sendMessage"
 
     payload = {
-        "chat_id": GROUP_ID,
+        "chat_id": Config.TELEGRAM_CHAT_ID,
         "text": text
     }
 
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print("Telegram error:", e)
+    requests.post(url, data=payload)
 
 
-# função usada pelo app.py
-def init_telegram(app):
-    print("Telegram bot initialized")
+def send_report_message(text):
+
+    url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_2}/sendMessage"
+
+    payload = {
+        "chat_id": Config.TELEGRAM_CHAT_ID,
+        "text": text
+    }
+
+    requests.post(url, data=payload)
