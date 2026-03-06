@@ -2,6 +2,11 @@ import requests
 from config import Config
 
 
+def init_telegram(app):
+
+    print("🤖 Telegram bot initialized")
+
+
 def send_bet_message(text):
 
     url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_1}/sendMessage"
