@@ -1,36 +1,33 @@
 from services.poisson_model import match_prediction
 
 
-def bar(prob):
+# força ofensiva estimada dos times
+TEAM_STRENGTH = {
 
-    blocks = int(prob * 10)
+    "Flamengo": 1.8,
+    "Palmeiras": 1.6,
+    "Barcelona": 2.0,
+    "Real Madrid": 2.1,
+    "Liverpool": 2.0,
+    "Man City": 2.2,
+    "PSG": 2.0,
+    "Bayern": 2.1
 
-    return "█" * blocks + "░" * (10 - blocks)
+}
 
 
 def predict_match(home, away):
 
-    result = match_prediction(home, away)
+    # se time não existir usa média
+    home_attack = TEAM_STRENGTH.get(home, 1.5)
+    away_attack = TEAM_STRENGTH.get(away, 1.5)
+
+    result = match_prediction(home_attack, away_attack)
 
     return {
-
-        "probabilities": {
-
-            "home_win": {
-                "prob": result["home_win"],
-                "bar": bar(result["home_win"])
-            },
-
-            "draw": {
-                "prob": result["draw"],
-                "bar": bar(result["draw"])
-            },
-
-            "away_win": {
-                "prob": result["away_win"],
-                "bar": bar(result["away_win"])
-            }
-
-        }
-
+        "home": home,
+        "away": away,
+        "prob_home_win": result["home_win"],
+        "prob_draw": result["draw"],
+        "prob_away_win": result["away_win"]
     }
