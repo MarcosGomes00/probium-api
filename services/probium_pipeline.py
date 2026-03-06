@@ -1,6 +1,7 @@
+from datetime import datetime
 import random
 
-from services.data_source import get_matches_by_date
+from services.data_source import get_matches_today
 from services.poisson_model import over25_prob, btts_prob
 from services.telegram_bot import send_bet_message
 
@@ -8,11 +9,51 @@ from services.telegram_bot import send_bet_message
 MIN_PROB = 0.57
 
 
+def format_message(bets):
+
+    header = f"""
+🤖 **PROBIUM AI SCANNER**
+
+📅 {datetime.now().strftime("%d/%m/%Y")}
+⚽ Top análises do dia
+
+━━━━━━━━━━━━━━━━━━
+"""
+
+    body = ""
+
+    for b in bets:
+
+        prob = round(b["prob"] * 100, 1)
+
+        bar = "🟩" * int(prob / 10)
+
+        body += f"""
+🏆 **{b['league']}**
+
+⚽ {b['home']} vs {b['away']}
+
+🎯 **Entrada:** {b['market']}
+
+📊 **Probabilidade:** {prob}%
+{bar}
+
+━━━━━━━━━━━━━━━━━━
+"""
+
+    footer = """
+📈 Modelo Probium AI
+⚠️ Gestão de banca recomendada
+"""
+
+    return header + body + footer
+
+
 def run_pipeline():
 
-    print("🔎 PROBIUM analisando partidas...")
+    print("🔎 PROBIUM analisando jogos...")
 
-    matches = get_matches_by_date("2026-03-07")
+    matches = get_matches_today()
 
     print(f"⚽ {len(matches)} jogos encontrados")
 
@@ -27,27 +68,27 @@ def run_pipeline():
         home_attack = random.uniform(1.2, 2.2)
         away_attack = random.uniform(1.0, 2.0)
 
-        over_prob = over25_prob(home_attack, away_attack)
+        over = over25_prob(home_attack, away_attack)
         btts = btts_prob(home_attack, away_attack)
-        under_prob = 1 - over_prob
+        under = 1 - over
 
         market = None
         prob = 0
 
-        if over_prob > MIN_PROB:
+        if over > MIN_PROB:
 
             market = "OVER 2.5"
-            prob = over_prob
+            prob = over
 
         elif btts > MIN_PROB:
 
             market = "BTTS SIM"
             prob = btts
 
-        elif under_prob > MIN_PROB:
+        elif under > MIN_PROB:
 
             market = "UNDER 2.5"
-            prob = under_prob
+            prob = under
 
         if market:
 
@@ -61,27 +102,15 @@ def run_pipeline():
 
     bets = sorted(bets, key=lambda x: x["prob"], reverse=True)
 
-    top = bets[:10]
+    top = bets[:5]
 
     if not top:
 
-        print("⚠ Nenhuma análise encontrada")
+        print("⚠ Nenhuma aposta encontrada")
         return
 
-    for b in top:
+    message = format_message(top)
 
-        msg = f"""
-🤖 PROBIUM AI
+    send_bet_message(message)
 
-🏆 Liga: {b['league']}
-
-⚽ {b['home']} vs {b['away']}
-
-🎯 Entrada: {b['market']}
-
-📊 Probabilidade: {round(b['prob']*100,1)}%
-"""
-
-        send_bet_message(msg)
-
-        print("✅ enviada:", b["home"], "vs", b["away"])
+    print("📤 Bilhete enviado no Telegram")
