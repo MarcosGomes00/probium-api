@@ -3,28 +3,33 @@ import os
 
 load_dotenv()
 
-from models.match import Match
 from flask import Flask
+
 from config import Config
+
 from services.database import db
 from services.telegram_bot import init_telegram
 from services.scheduler import start_scheduler
+
 from routes.predict import predict_bp
+from routes.stats import stats_bp
+
 from middleware.error_handler import register_error_handlers
 
 
 def create_app():
 
     app = Flask(__name__)
+
     app.config.from_object(Config)
 
     db.init_app(app)
 
-    # registrar middleware
     register_error_handlers(app)
 
     # registrar rotas
     app.register_blueprint(predict_bp)
+    app.register_blueprint(stats_bp)
 
     @app.route("/")
     def home():
@@ -35,23 +40,21 @@ def create_app():
         return {"status": "ok"}
 
     with app.app_context():
+
         db.create_all()
+
         init_telegram(app)
+
         start_scheduler(app)
 
     return app
 
 
-# expor app para gunicorn
 app = create_app()
 
 
-# execução local / fallback
 if __name__ == "__main__":
 
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 5000))
 
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    app.run(host="0.0.0.0", port=port)

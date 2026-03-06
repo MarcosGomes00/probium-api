@@ -1,35 +1,61 @@
-from models.match import Match
-from services.database import db
+import json
+
+FILE_PATH = "bets_history.json"
 
 
-def team_stats(team):
+def load_bets():
 
-    home_matches = Match.query.filter_by(home_team=team).all()
-    away_matches = Match.query.filter_by(away_team=team).all()
+    try:
 
-    games = len(home_matches) + len(away_matches)
+        with open(FILE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-    if games == 0:
-        return {
-            "attack": 1,
-            "defense": 1
-        }
+    except:
 
-    goals_scored = 0
-    goals_conceded = 0
+        return []
 
-    for m in home_matches:
-        goals_scored += int(m.home_goals or 0)
-        goals_conceded += int(m.away_goals or 0)
 
-    for m in away_matches:
-        goals_scored += int(m.away_goals or 0)
-        goals_conceded += int(m.home_goals or 0)
+def calculate_stats():
 
-    attack = goals_scored / games
-    defense = goals_conceded / games
+    bets = load_bets()
+
+    total_bets = len(bets)
+
+    greens = 0
+    reds = 0
+
+    profit = 0
+
+    for bet in bets:
+
+        status = bet.get("status")
+        odd = bet.get("odd", 1)
+
+        if status == "green":
+
+            greens += 1
+            profit += odd - 1
+
+        elif status == "red":
+
+            reds += 1
+            profit -= 1
+
+    winrate = 0
+    roi = 0
+
+    if total_bets > 0:
+
+        winrate = (greens / total_bets) * 100
+        roi = (profit / total_bets) * 100
 
     return {
-        "attack": attack,
-        "defense": defense
+
+        "total_bets": total_bets,
+        "greens": greens,
+        "reds": reds,
+        "winrate": round(winrate, 2),
+        "roi": round(roi, 2),
+        "profit_units": round(profit, 2)
+
     }
