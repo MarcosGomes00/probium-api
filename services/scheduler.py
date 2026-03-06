@@ -1,41 +1,54 @@
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
-from services.probium_v2_pro_scanner import run_probium_v2_pro
-from services.telegram_bot import send_message
+from services.probium_pipeline import run_pipeline
+from services.result_checker import check_results
 
 
 scheduler = BackgroundScheduler()
 
 
-def scan_job():
+def run_scanner():
 
-    bets = run_probium_v2_pro()
+    print("\n🤖 PROBIUM AI SCANNER EXECUTANDO")
 
-    if not bets:
-        print("Nenhuma aposta encontrada")
-        return
+    try:
 
-    msg = "📊 PROBIUM V2 PRO\n\n"
+        run_pipeline()
 
-    for b in bets:
+        print("✅ Scanner finalizado", datetime.now())
 
-        msg += f"⚽ {b.home} x {b.away}\n"
-        msg += f"📈 {b.market} @ {b.odd}\n"
-        msg += f"EV: {round(b.ev*100,2)}%\n\n"
+    except Exception as e:
 
-    send_message(msg)
+        print("❌ Erro no scanner:", e)
 
-    print("Scanner V2 PRO executado")
+
+def run_results():
+
+    print("\n📊 VERIFICANDO RESULTADOS DAS APOSTAS")
+
+    try:
+
+        check_results()
+
+        print("✅ Resultados atualizados", datetime.now())
+
+    except Exception as e:
+
+        print("❌ Erro ao verificar resultados:", e)
 
 
 def start_scheduler(app):
 
-    scheduler.add_job(
-        scan_job,
-        "cron",
-        hour="9,14,18,21"
-    )
+    print("\n🚀 Scheduler iniciado - PROBIUM AI")
+
+    # scans principais do dia
+    scheduler.add_job(run_scanner, "cron", hour=9, minute=0)
+    scheduler.add_job(run_scanner, "cron", hour=14, minute=0)
+    scheduler.add_job(run_scanner, "cron", hour=18, minute=0)
+    scheduler.add_job(run_scanner, "cron", hour=21, minute=0)
+
+    # verificação de resultados
+    scheduler.add_job(run_results, "cron", hour=23, minute=30)
 
     scheduler.start()
-
-    print("🤖 Scheduler iniciado - PROBIUM V2 PRO")

@@ -44,3 +44,32 @@ def match_prediction(home_attack, away_attack):
         "draw": round(draw, 4),
         "away_win": round(away_win, 4)
     }
+
+
+def predict_score(home_attack, away_attack):
+
+    result = match_prediction(home_attack, away_attack)
+
+    return result
+
+
+def over25_prob(home_attack, away_attack):
+
+    total_lambda = float(home_attack) + float(away_attack)
+
+    prob = 0
+
+    for goals in range(3):
+        prob += poisson_probability(goals, total_lambda)
+
+    return round(1 - prob, 4)
+
+
+def btts_prob(home_attack, away_attack):
+
+    prob_home_zero = poisson_probability(0, home_attack)
+    prob_away_zero = poisson_probability(0, away_attack)
+
+    prob = 1 - prob_home_zero - prob_away_zero + (prob_home_zero * prob_away_zero)
+
+    return round(prob, 4)
