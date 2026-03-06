@@ -31,3 +31,32 @@ def match_prediction(home_attack, home_defense, away_attack, away_defense):
         "draw": draw,
         "away_win": away_win
     }
+
+
+def over25_prob(home_lambda, away_lambda):
+
+    prob = 0
+
+    for i in range(6):
+        for j in range(6):
+
+            goals = i + j
+            p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
+
+            if goals > 2:
+                prob += p
+
+    return prob
+
+
+def btts_prob(home_lambda, away_lambda):
+
+    prob = 0
+
+    for i in range(1,6):
+        for j in range(1,6):
+
+            p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
+            prob += p
+
+    return prob
