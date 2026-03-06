@@ -1,14 +1,18 @@
-from services.data_source import get_matches_today
+import random
+
+from services.data_source import get_matches_by_date
 from services.poisson_model import over25_prob, btts_prob
 from services.telegram_bot import send_bet_message
-import random
+
+
+MIN_PROB = 0.57
 
 
 def run_pipeline():
 
-    print("🔎 PROBIUM analisando jogos...")
+    print("🔎 PROBIUM analisando partidas...")
 
-    matches = get_matches_today()
+    matches = get_matches_by_date("2026-03-07")
 
     print(f"⚽ {len(matches)} jogos encontrados")
 
@@ -18,10 +22,10 @@ def run_pipeline():
 
         home = m["home"]
         away = m["away"]
+        league = m["league"]
 
-        # simulando força ofensiva
-        home_attack = random.uniform(1.2, 2.4)
-        away_attack = random.uniform(1.0, 2.2)
+        home_attack = random.uniform(1.2, 2.2)
+        away_attack = random.uniform(1.0, 2.0)
 
         over_prob = over25_prob(home_attack, away_attack)
         btts = btts_prob(home_attack, away_attack)
@@ -30,17 +34,17 @@ def run_pipeline():
         market = None
         prob = 0
 
-        if over_prob > 0.65:
+        if over_prob > MIN_PROB:
 
             market = "OVER 2.5"
             prob = over_prob
 
-        elif btts > 0.65:
+        elif btts > MIN_PROB:
 
             market = "BTTS SIM"
             prob = btts
 
-        elif under_prob > 0.65:
+        elif under_prob > MIN_PROB:
 
             market = "UNDER 2.5"
             prob = under_prob
@@ -50,6 +54,7 @@ def run_pipeline():
             bets.append({
                 "home": home,
                 "away": away,
+                "league": league,
                 "market": market,
                 "prob": prob
             })
@@ -60,13 +65,15 @@ def run_pipeline():
 
     if not top:
 
-        print("⚠ Nenhuma aposta encontrada")
+        print("⚠ Nenhuma análise encontrada")
         return
 
     for b in top:
 
         msg = f"""
 🤖 PROBIUM AI
+
+🏆 Liga: {b['league']}
 
 ⚽ {b['home']} vs {b['away']}
 
