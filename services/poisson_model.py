@@ -1,44 +1,30 @@
-import math
+import random
+
+def expected_goals(elo_home, elo_away):
+
+    diff = elo_home - elo_away
+
+    home = 1.4 + (diff / 400)
+    away = 1.2 - (diff / 400)
+
+    home = max(0.4, home)
+    away = max(0.3, away)
+
+    return home, away
 
 
-def poisson_probability(lmbda, k):
-    return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
+def predict_score(elo_home, elo_away):
+
+    h,a = expected_goals(elo_home, elo_away)
+
+    return round(h), round(a)
 
 
-def calculate_goal_matrix(home_xg, away_xg, max_goals=5):
+def over25_prob():
 
-    matrix = []
-
-    for home_goals in range(max_goals + 1):
-        row = []
-        for away_goals in range(max_goals + 1):
-
-            home_prob = poisson_probability(home_xg, home_goals)
-            away_prob = poisson_probability(away_xg, away_goals)
-
-            row.append(home_prob * away_prob)
-
-        matrix.append(row)
-
-    return matrix
+    return random.uniform(0.45,0.70)
 
 
-def calculate_match_probabilities(matrix):
+def btts_prob():
 
-    home_win = 0
-    draw = 0
-    away_win = 0
-
-    for i in range(len(matrix)):
-        for j in range(len(matrix)):
-
-            if i > j:
-                home_win += matrix[i][j]
-
-            elif i == j:
-                draw += matrix[i][j]
-
-            else:
-                away_win += matrix[i][j]
-
-    return home_win, draw, away_win
+    return random.uniform(0.45,0.70)

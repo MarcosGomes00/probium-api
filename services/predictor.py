@@ -1,48 +1,36 @@
-from services.poisson_model import calculate_goal_matrix, calculate_match_probabilities
-import random
+from services.poisson_model import match_prediction
 
-def probability_bar(value):
-    filled = int(value * 10)
-    empty = 10 - filled
-    return "█" * filled + "░" * empty
 
-def predict_match(home_team, away_team):
+def bar(prob):
 
-    home_xg = round(random.uniform(1.4, 2.0), 2)
-    away_xg = round(random.uniform(0.9, 1.6), 2)
+    blocks = int(prob * 10)
 
-    matrix = calculate_goal_matrix(home_xg, away_xg)
+    return "█" * blocks + "░" * (10 - blocks)
 
-    home_win, draw, away_win = calculate_match_probabilities(matrix)
 
-    result = {
+def predict_match(home, away):
 
-        "match": f"{home_team} vs {away_team}",
+    result = match_prediction(home, away)
 
-        "expected_goals": {
-            "home": home_xg,
-            "away": away_xg
-        },
+    return {
 
         "probabilities": {
 
             "home_win": {
-                "prob": round(home_win,3),
-                "bar": probability_bar(home_win)
+                "prob": result["home_win"],
+                "bar": bar(result["home_win"])
             },
 
             "draw": {
-                "prob": round(draw,3),
-                "bar": probability_bar(draw)
+                "prob": result["draw"],
+                "bar": bar(result["draw"])
             },
 
             "away_win": {
-                "prob": round(away_win,3),
-                "bar": probability_bar(away_win)
+                "prob": result["away_win"],
+                "bar": bar(result["away_win"])
             }
 
         }
 
     }
-
-    return result
