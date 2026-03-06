@@ -1,33 +1,25 @@
 from dotenv import load_dotenv
-import os
-
 load_dotenv()
 
 from flask import Flask
-
 from config import Config
-
 from services.database import db
 from services.telegram_bot import init_telegram
 from services.scheduler import start_scheduler
-
 from routes.predict import predict_bp
 from routes.stats import stats_bp
-
 from middleware.error_handler import register_error_handlers
 
 
 def create_app():
 
     app = Flask(__name__)
-
     app.config.from_object(Config)
 
     db.init_app(app)
 
     register_error_handlers(app)
 
-    # registrar rotas
     app.register_blueprint(predict_bp)
     app.register_blueprint(stats_bp)
 
@@ -54,7 +46,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-
-    port = int(os.environ.get("PORT", 5000))
-
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
