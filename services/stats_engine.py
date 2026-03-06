@@ -1,20 +1,63 @@
-import random
+import json
+import os
+
+HISTORY_FILE = "bets_history.json"
 
 
-class StatsEngine:
+def load_history():
 
-    def get_team_stats(self, team):
+    if not os.path.exists(HISTORY_FILE):
+        return []
 
-        # Simulação baseada em dados médios reais do futebol
-        # até conectarmos API completa
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except:
+            return []
 
-        goals_scored = random.uniform(1.0, 2.4)
-        goals_conceded = random.uniform(0.8, 1.8)
 
-        form = random.uniform(0.3, 0.9)
+def calculate_stats():
 
+    history = load_history()
+
+    if not history:
         return {
-            "scored": goals_scored,
-            "conceded": goals_conceded,
-            "form": form
+            "total_bets": 0,
+            "elite": 0,
+            "forte": 0,
+            "boa": 0,
+            "avg_prob": 0,
+            "avg_ev": 0
         }
+
+    total = len(history)
+
+    elite = 0
+    forte = 0
+    boa = 0
+
+    prob_sum = 0
+    ev_sum = 0
+
+    for bet in history:
+
+        prob_sum += bet.get("prob", 0)
+        ev_sum += bet.get("ev", 0)
+
+        confidence = bet.get("confidence", "")
+
+        if "ELITE" in confidence:
+            elite += 1
+        elif "FORTE" in confidence:
+            forte += 1
+        elif "BOA" in confidence:
+            boa += 1
+
+    return {
+        "total_bets": total,
+        "elite": elite,
+        "forte": forte,
+        "boa": boa,
+        "avg_prob": round(prob_sum / total, 4),
+        "avg_ev": round(ev_sum / total, 4)
+    }
