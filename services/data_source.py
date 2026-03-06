@@ -12,7 +12,7 @@ headers = {
 }
 
 
-# ligas principais
+# principais ligas
 LEAGUES = [
     39,   # Premier League
     140,  # La Liga
@@ -26,6 +26,8 @@ def get_matches_today():
 
     today = datetime.now().strftime("%Y-%m-%d")
 
+    season = datetime.now().year  # temporada automática
+
     matches = []
 
     for league in LEAGUES:
@@ -35,7 +37,7 @@ def get_matches_today():
         params = {
             "date": today,
             "league": league,
-            "season": 2024
+            "season": season
         }
 
         try:
@@ -60,5 +62,34 @@ def get_matches_today():
         except Exception as e:
 
             print("Erro API football:", e)
+
+
+    # fallback se não tiver jogos hoje
+    if not matches:
+
+        print("⚠ Nenhum jogo hoje — buscando próximos jogos")
+
+        url = f"{BASE_URL}/fixtures"
+
+        params = {
+            "next": 20
+        }
+
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+
+        data = r.json()
+
+        fixtures = data.get("response", [])
+
+        for f in fixtures:
+
+            matches.append({
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+                "home_id": f["teams"]["home"]["id"],
+                "away_id": f["teams"]["away"]["id"],
+                "league": f["league"]["name"],
+                "time": f["fixture"]["date"]
+            })
 
     return matches
