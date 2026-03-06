@@ -1,8 +1,18 @@
+import os
+
+
 class Config:
+
+    # DATABASE (Railway)
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
 
     # APIs
     ODDS_API_KEY = "6a1c0078b3ed09b42fbacee8f07e7cc3"
     API_FOOTBALL_KEY = "a1b4dc55ed3248a09e8b8582e4dbc0c9"
+
 
     # TELEGRAM
     TELEGRAM_BOT_1 = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
