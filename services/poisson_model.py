@@ -3,10 +3,15 @@ import math
 
 def poisson_probability(k, lamb):
 
+    lamb = float(lamb)
+
     return (lamb ** k * math.exp(-lamb)) / math.factorial(k)
 
 
-def match_prediction(home_attack=1.5, away_attack=1.2):
+def match_prediction(home_attack, away_attack):
+
+    home_attack = float(home_attack)
+    away_attack = float(away_attack)
 
     home_goals = []
     away_goals = []
@@ -27,13 +32,15 @@ def match_prediction(home_attack=1.5, away_attack=1.2):
 
             if i > j:
                 home_win += prob
+
             elif i == j:
                 draw += prob
+
             else:
                 away_win += prob
 
     return {
-        "home_win": round(home_win, 3),
-        "draw": round(draw, 3),
-        "away_win": round(away_win, 3)
+        "home_win": round(home_win, 4),
+        "draw": round(draw, 4),
+        "away_win": round(away_win, 4)
     }
