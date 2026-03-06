@@ -1,11 +1,13 @@
-import math
+class EloEngine:
 
-HOME_ADVANTAGE = 65
+    def expected_score(self, elo_a, elo_b):
 
-def elo_probability(elo_home, elo_away):
+        return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
 
-    diff = (elo_home + HOME_ADVANTAGE) - elo_away
 
-    prob = 1 / (1 + math.pow(10, -diff / 400))
+    def win_probability(self, elo_home, elo_away):
 
-    return prob
+        home = self.expected_score(elo_home, elo_away)
+        away = 1 - home
+
+        return home, away

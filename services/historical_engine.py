@@ -1,56 +1,61 @@
-import random
-from services.form_engine import FormEngine
+import requests
+from config import Config
+
+
+API_KEY = Config.API_FOOTBALL_KEY
+BASE_URL = "https://v3.football.api-sports.io"
+
+
+headers = {
+    "x-apisports-key": API_KEY
+}
 
 
 class HistoricalEngine:
 
-    def __init__(self):
+    def last_matches(self, team_id):
 
-        self.form_engine = FormEngine()
+        url = f"{BASE_URL}/fixtures"
 
+        params = {
+            "team": team_id,
+            "last": 5
+        }
 
-    def h2h_factor(self):
+        r = requests.get(url, headers=headers, params=params, timeout=10)
 
-        return random.uniform(0.45, 0.65)
+        data = r.json()
 
+        matches = data.get("response", [])
 
-    def attack_strength(self):
+        goals_for = 0
+        goals_against = 0
+        wins = 0
 
-        return random.uniform(0.45, 0.75)
+        for m in matches:
 
+            home = m["teams"]["home"]["id"]
+            goals_home = m["goals"]["home"]
+            goals_away = m["goals"]["away"]
 
-    def defense_strength(self):
+            if home == team_id:
 
-        return random.uniform(0.40, 0.70)
+                goals_for += goals_home
+                goals_against += goals_away
 
+                if goals_home > goals_away:
+                    wins += 1
 
-    def combined_probability(
-        self,
-        elo_prob,
-        poisson_prob,
-        home,
-        away
-    ):
+            else:
 
-        form = self.form_engine.team_form_probability()
+                goals_for += goals_away
+                goals_against += goals_home
 
-        h2h = self.h2h_factor()
+                if goals_away > goals_home:
+                    wins += 1
 
-        attack = self.attack_strength()
-
-        defense = self.defense_strength()
-
-        prob = (
-
-            (elo_prob * 0.30)
-            + (poisson_prob * 0.20)
-            + (form * 0.20)
-            + (h2h * 0.15)
-            + (attack * 0.10)
-            + (defense * 0.05)
-
-        )
-
-        prob = max(0.40, min(0.85, prob))
-
-        return prob
+        return {
+            "form": wins / 5,
+            "goals_for": goals_for / 5,
+            "goals_against": goals_against / 5
+        }
