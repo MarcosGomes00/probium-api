@@ -1,14 +1,18 @@
 import requests
-from config import Config
+import os
 
 
-BOT_TOKEN = Config.TELEGRAM_BOT_1
-CHAT_ID = Config.TELEGRAM_CHAT_ID
+BOT_TOKEN = os.getenv("BOT1_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_GROUP_ID")
+
+
+def init_telegram(app):
+    print("🤖 Telegram bot initialized")
 
 
 def send_bet_message(text):
 
-    if not BOT_TOKEN:
+    if not BOT_TOKEN or not CHAT_ID:
         print("⚠ Telegram não configurado")
         return
 
@@ -25,10 +29,11 @@ def send_bet_message(text):
         r = requests.post(url, data=payload, timeout=10)
 
         if r.status_code == 200:
-            print("📤 Mensagem enviada Telegram")
+            print("📤 Mensagem enviada no Telegram")
+
         else:
-            print("Erro Telegram:", r.text)
+            print("❌ erro telegram", r.text)
 
     except Exception as e:
 
-        print("Erro Telegram:", e)
+        print("❌ erro envio telegram", e)
