@@ -1,30 +1,33 @@
 import math
 
 
-def poisson_prob(lmbda, k):
-
-    return (lmbda**k * math.exp(-lmbda)) / math.factorial(k)
-
-
-def expected_goals(home_attack, away_defense):
-
-    return (home_attack + away_defense) / 2
+def poisson_probability(lmbda, k):
+    return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
 
-def over25_prob(home_attack, away_attack):
+def match_prediction(home_attack, home_defense, away_attack, away_defense):
 
-    lam = home_attack + away_attack
+    home_lambda = home_attack * away_defense
+    away_lambda = away_attack * home_defense
 
-    p0 = poisson_prob(lam, 0)
-    p1 = poisson_prob(lam, 1)
-    p2 = poisson_prob(lam, 2)
+    home_win = 0
+    draw = 0
+    away_win = 0
 
-    return 1 - (p0 + p1 + p2)
+    for i in range(6):
+        for j in range(6):
 
+            p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
 
-def btts_prob(home_attack, away_attack):
+            if i > j:
+                home_win += p
+            elif i == j:
+                draw += p
+            else:
+                away_win += p
 
-    p_home = 1 - poisson_prob(home_attack, 0)
-    p_away = 1 - poisson_prob(away_attack, 0)
-
-    return p_home * p_away
+    return {
+        "home_win": home_win,
+        "draw": draw,
+        "away_win": away_win
+    }
