@@ -1,30 +1,39 @@
-import random
-
-def expected_goals(elo_home, elo_away):
-
-    diff = elo_home - elo_away
-
-    home = 1.4 + (diff / 400)
-    away = 1.2 - (diff / 400)
-
-    home = max(0.4, home)
-    away = max(0.3, away)
-
-    return home, away
+import math
 
 
-def predict_score(elo_home, elo_away):
+def poisson_probability(k, lamb):
 
-    h,a = expected_goals(elo_home, elo_away)
-
-    return round(h), round(a)
+    return (lamb ** k * math.exp(-lamb)) / math.factorial(k)
 
 
-def over25_prob():
+def match_prediction(home_attack=1.5, away_attack=1.2):
 
-    return random.uniform(0.45,0.70)
+    home_goals = []
+    away_goals = []
 
+    for i in range(6):
 
-def btts_prob():
+        home_goals.append(poisson_probability(i, home_attack))
+        away_goals.append(poisson_probability(i, away_attack))
 
-    return random.uniform(0.45,0.70)
+    home_win = 0
+    draw = 0
+    away_win = 0
+
+    for i in range(6):
+        for j in range(6):
+
+            prob = home_goals[i] * away_goals[j]
+
+            if i > j:
+                home_win += prob
+            elif i == j:
+                draw += prob
+            else:
+                away_win += prob
+
+    return {
+        "home_win": round(home_win, 3),
+        "draw": round(draw, 3),
+        "away_win": round(away_win, 3)
+    }
