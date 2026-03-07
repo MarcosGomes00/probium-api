@@ -1,19 +1,11 @@
 import requests
 
 # =========================
-# CONFIGURAÇÃO TELEGRAM
+# CONFIG TELEGRAM
 # =========================
 
 BOT_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
 CHAT_ID = "-1003814625223"
-
-
-# =========================
-# INICIAR BOT
-# =========================
-
-def init_bot():
-    print("🤖 Telegram bot initialized")
 
 
 # =========================
@@ -26,7 +18,8 @@ def send_message(message):
 
     payload = {
         "chat_id": CHAT_ID,
-        "text": message
+        "text": message,
+        "parse_mode": "Markdown"
     }
 
     try:
@@ -39,17 +32,46 @@ def send_message(message):
 
 
 # =========================
-# FUNÇÃO USADA PELO PIPELINE
+# MENSAGEM PROFISSIONAL
 # =========================
 
 def send_bet_message(bet):
 
-    message = "🎯 APOSTA DETECTADA\n\n"
+    home = bet.get("home")
+    away = bet.get("away")
+    market = bet.get("market")
+    prob = bet.get("prob")
+    odd = bet.get("odd")
+    ev = bet.get("ev")
 
-    message += f"Jogo: {bet.get('home')} x {bet.get('away')}\n"
-    message += f"Mercado: {bet.get('market')}\n"
-    message += f"Probabilidade: {bet.get('prob')}%\n"
-    message += f"Odd: {bet.get('odd')}\n"
-    message += f"EV: {bet.get('ev')}\n"
+    message = f"""
+📊 *PROBIUM AI — ANÁLISE DE PARTIDA*
+
+⚽ *{home} vs {away}*
+
+━━━━━━━━━━━━━━━
+
+📈 *Probabilidade:* {prob}%
+📉 *Odd média:* {odd}
+💰 *Value Bet:* {ev}
+
+━━━━━━━━━━━━━━━
+
+🎯 *Mercado recomendado*
+➡️ {market}
+
+━━━━━━━━━━━━━━━
+
+🤖 Análise gerada por  
+*PROBIUM AI ENGINE*
+"""
 
     send_message(message)
+
+
+# =========================
+# INICIAR BOT
+# =========================
+
+def init_bot():
+    print("🤖 Telegram bot initialized")
