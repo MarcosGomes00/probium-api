@@ -1,50 +1,57 @@
-from flask import Flask
-from config import Config
 from services.database import db
 from sqlalchemy import text
 
 
 def predict_match(home, away):
 
-    stats = db.session.execute(text("""
+    try:
 
-        SELECT
-        AVG(home_goals) as home_avg,
-        AVG(away_goals) as away_avg
+        stats = db.session.execute(text("""
 
-        FROM matches_history
+            SELECT
+                AVG(home_goals) as home_avg,
+                AVG(away_goals) as away_avg
+            FROM matches_history
+            WHERE home_team = :home
+            OR away_team = :away
 
-        WHERE home_team = :home
-        OR away_team = :away
+        """), {
+            "home": home,
+            "away": away
+        }).fetchone()
 
-    """), {
+        # se não encontrar dados
+        if not stats:
+            return {
+                "home": home,
+                "away": away,
+                "prediction": "no data",
+                "probability": 0
+            }
 
-        "home": home,
-        "away": away
+        home_avg = stats.home_avg
+        away_avg = stats.away_avg
 
-    }).fetchone()
+        if home_avg is None or away_avg is None:
+            return {
+                "home": home,
+                "away": away,
+                "prediction": "insufficient data",
+                "probability": 0
+            }
 
-    if not stats:
+        probability = ((home_avg + away_avg) / 2) * 50
+
         return {
             "home": home,
             "away": away,
-            "prediction": "No data",
-            "probability": 0
+            "prediction": "Over 2.5",
+            "probability": round(probability, 2)
         }
 
-    if stats.home_avg is None or stats.away_avg is None:
+    except Exception as e:
+
         return {
-            "home": home,
-            "away": away,
-            "prediction": "Insufficient data",
-            "probability": 0
+            "status": "error",
+            "message": str(e)
         }
-
-    probability = ((stats.home_avg + stats.away_avg) / 2) * 50
-
-    return {
-        "home": home,
-        "away": away,
-        "prediction": "Over 2.5",
-        "probability": round(probability, 2)
-    }

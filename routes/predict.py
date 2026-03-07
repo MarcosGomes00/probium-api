@@ -3,27 +3,16 @@ from services.predictor import predict_match
 
 predict_bp = Blueprint("predict", __name__)
 
-@predict_bp.route("/predict", methods=["GET", "POST"])
+
+@predict_bp.route("/predict")
 def predict():
 
-    if request.method == "GET":
+    home = request.args.get("home")
+    away = request.args.get("away")
 
-        home_team = request.args.get("home")
-        away_team = request.args.get("away")
+    if not home or not away:
+        return jsonify({"error": "use /predict?home=TeamA&away=TeamB"})
 
-        if not home_team or not away_team:
-            return jsonify({
-                "error": "use /predict?home=TeamA&away=TeamB"
-            })
-
-        result = predict_match(home_team, away_team)
-        return jsonify(result)
-
-    data = request.get_json()
-
-    home_team = data.get("home_team")
-    away_team = data.get("away_team")
-
-    result = predict_match(home_team, away_team)
+    result = predict_match(home, away)
 
     return jsonify(result)
