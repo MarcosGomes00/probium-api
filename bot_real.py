@@ -27,8 +27,8 @@ def enviar_telegram(texto):
     }
     try:
         requests.post(url, json=payload)
-    except:
-        pass
+    except Exception as e:
+        print(f"Erro ao enviar pro Telegram: {e}")
 
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -61,8 +61,10 @@ def processar_jogos_e_enviar():
                 if not mercados: continue
                 
                 odds = mercados[0]["outcomes"]
-                odd_home = next((item["price"] for item in odds if item["name"] == evento["home_team"]), 0)
-                odd_away = next((item["price"] for item in odds if item["name"] == evento["away_team"]), 0)
+                home_team = evento["home_team"]
+                away_team = evento["away_team"]
+                
+                odd_home = next((item["price"] for item in odds if item["name"] == home_team), 0)
                 
                 if odd_home == 0: continue
 
@@ -80,27 +82,34 @@ def processar_jogos_e_enviar():
                     confianca = "👍 BOA"
                     stake = 1.0
                 
-                jogo_id = f"{evento['home_team']}_x_{evento['away_team']}_{horario_br.strftime('%Y%m%d')}"
+                jogo_id = f"{home_team}_x_{away_team}_{horario_br.strftime('%Y%m%d')}"
                 minutos_faltando = (horario_br - agora_br).total_seconds() / 60
 
+                # Verifica se o jogo vai começar entre 30 e 60 minutos
                 if 30 <= minutos_faltando <= 60:
                     if jogo_id not in jogos_enviados:
+                        
+                        # --- NOVO VISUAL PREMIUM ---
                         texto_msg = (
-                            f"🤖 <b>NOVA ANÁLISE PRÉ-JOGO ENCONTRADA!</b> 🤖\n\n"
-                            f"🏆 <b>Liga:</b> {evento['sport_title']}\n"
-                            f"⚽ <b>Jogo:</b> {evento['home_team']} x {evento['away_team']}\n"
-                            f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {int(minutos_faltando)} mins)\n\n"
-                            f"📊 <b>Odd Casa (Vitória):</b> {odd_home}\n"
-                            f"📊 <b>Odd Fora (Vitória):</b> {odd_away}\n"
-                            f"⚡ <b>Confiança do Bot:</b> {confianca}\n"
-                            f"💰 <b>Stake Recomendada:</b> {stake}%\n\n"
-                            f"📈 <b>Probabilidade de Win:</b> {prob:.1%}\n"
-                            f"💎 <b>EV (Valor Esperado):</b> {ev:.2%}\n"
-                            f"🛡 <b>Edge:</b> {edge:.2%}\n"
+                            f"💎 <b>APOSTA PREMIUM LIBERADA</b> 💎\n\n"
+                            f"🏆 <b>Campeonato:</b> {evento['sport_title']}\n"
+                            f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {int(minutos_faltando)} min)\n"
+                            f"⚽️ <b>Jogo:</b> {home_team} x {away_team}\n\n"
+                            f"🎯 <b>O QUE APOSTAR (MERCADO EXATO):</b>\n"
+                            f"👉 <b>Vitória do {home_team} (Casa)</b>\n\n"
+                            f"📈 <b>Odd Mínima:</b> {odd_home}\n"
+                            f"💰 <b>Gestão / Stake:</b> {stake} Unidades\n"
+                            f"🔥 <b>Confiança:</b> {confianca}\n\n"
+                            f"🤖 <b>Estatísticas do Algoritmo:</b>\n"
+                            f"• Chance de Bater: <code>{prob:.2%}</code>\n"
+                            f"• Valor Encontrado (+EV): <code>{ev:.2%}</code>\n"
+                            f"• Edge da Aposta: <code>{edge:.2%}</code>\n\n"
+                            f"<i>⚠️ Siga a gestão e jogue com responsabilidade.</i>"
                         )
+                        
                         enviar_telegram(texto_msg)
                         jogos_enviados.add(jogo_id)
-                        print(f"🚀 Análise enviada pro Telegram: {evento['home_team']} x {evento['away_team']}")
+                        print(f"🚀 Análise enviada pro Telegram: {home_team} x {away_team}")
 
         except Exception as e:
             pass
