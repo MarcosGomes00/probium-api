@@ -49,7 +49,7 @@ app.register_blueprint(stats_bp)
 init_bot()
 
 # iniciar scheduler
-start_scheduler()
+start_scheduler(app)
 
 
 @app.route("/")
