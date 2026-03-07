@@ -1,33 +1,50 @@
-from services.poisson_model import match_prediction
-
-
-# força ofensiva estimada dos times
-TEAM_STRENGTH = {
-
-    "Flamengo": 1.8,
-    "Palmeiras": 1.6,
-    "Barcelona": 2.0,
-    "Real Madrid": 2.1,
-    "Liverpool": 2.0,
-    "Man City": 2.2,
-    "PSG": 2.0,
-    "Bayern": 2.1
-
-}
+from flask import Flask
+from config import Config
+from services.database import db
+from sqlalchemy import text
 
 
 def predict_match(home, away):
 
-    # se time não existir usa média
-    home_attack = TEAM_STRENGTH.get(home, 1.5)
-    away_attack = TEAM_STRENGTH.get(away, 1.5)
+    stats = db.session.execute(text("""
 
-    result = match_prediction(home_attack, away_attack)
+        SELECT
+        AVG(home_goals) as home_avg,
+        AVG(away_goals) as away_avg
+
+        FROM matches_history
+
+        WHERE home_team = :home
+        OR away_team = :away
+
+    """), {
+
+        "home": home,
+        "away": away
+
+    }).fetchone()
+
+    if not stats:
+        return {
+            "home": home,
+            "away": away,
+            "prediction": "No data",
+            "probability": 0
+        }
+
+    if stats.home_avg is None or stats.away_avg is None:
+        return {
+            "home": home,
+            "away": away,
+            "prediction": "Insufficient data",
+            "probability": 0
+        }
+
+    probability = ((stats.home_avg + stats.away_avg) / 2) * 50
 
     return {
         "home": home,
         "away": away,
-        "prob_home_win": result["home_win"],
-        "prob_draw": result["draw"],
-        "prob_away_win": result["away_win"]
+        "prediction": "Over 2.5",
+        "probability": round(probability, 2)
     }
