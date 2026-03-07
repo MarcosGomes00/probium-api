@@ -3,57 +3,48 @@ from datetime import datetime
 from config import Config
 
 
-BASE_URL = "https://v3.football.api-sports.io/fixtures"
+API_KEY = Config.API_FOOTBALL_KEY
 
-HEADERS = {
-    "x-apisports-key": Config.API_FOOTBALL_KEY
+BASE_URL = "https://v3.football.api-sports.io"
+
+headers = {
+    "x-apisports-key": API_KEY
 }
 
 
-def get_matches_today():
+LEAGUES = [
+    39,   # Premier League
+    140,  # La Liga
+    135,  # Serie A
+    78,   # Bundesliga
+    61,   # Ligue 1
+    71,   # Brasileirão
+    94,   # Copa do Brasil
+    2,    # Champions League
+    13    # Libertadores
+]
+
+
+def fetch_api_football():
 
     matches = []
 
-    # primeiro tenta jogos do dia
     today = datetime.now().strftime("%Y-%m-%d")
+    season = datetime.now().year
 
-    params = {
-        "date": today
-    }
+    for league in LEAGUES:
 
-    try:
-
-        r = requests.get(BASE_URL, headers=HEADERS, params=params, timeout=10)
-
-        data = r.json()
-
-        fixtures = data.get("response", [])
-
-        for f in fixtures:
-
-            matches.append({
-                "home": f["teams"]["home"]["name"],
-                "away": f["teams"]["away"]["name"],
-                "league": f["league"]["name"],
-                "time": f["fixture"]["date"]
-            })
-
-    except Exception as e:
-
-        print("Erro API Football:", e)
-
-    # fallback → pega próximos jogos
-    if not matches:
-
-        print("⚠ Nenhum jogo hoje — buscando próximos")
+        url = f"{BASE_URL}/fixtures"
 
         params = {
-            "next": 20
+            "date": today,
+            "league": league,
+            "season": season
         }
 
         try:
 
-            r = requests.get(BASE_URL, headers=HEADERS, params=params, timeout=10)
+            r = requests.get(url, headers=headers, params=params, timeout=10)
 
             data = r.json()
 
@@ -62,16 +53,71 @@ def get_matches_today():
             for f in fixtures:
 
                 matches.append({
+
                     "home": f["teams"]["home"]["name"],
                     "away": f["teams"]["away"]["name"],
+                    "home_id": f["teams"]["home"]["id"],
+                    "away_id": f["teams"]["away"]["id"],
                     "league": f["league"]["name"],
+                    "league_id": f["league"]["id"],
                     "time": f["fixture"]["date"]
+
                 })
 
         except Exception as e:
 
             print("Erro API Football:", e)
 
-    print(f"⚽ {len(matches)} jogos encontrados")
+    return matches
+
+
+def fetch_next_matches():
+
+    matches = []
+
+    url = f"{BASE_URL}/fixtures"
+
+    params = {
+        "next": 100
+    }
+
+    try:
+
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+
+        data = r.json()
+
+        fixtures = data.get("response", [])
+
+        for f in fixtures:
+
+            matches.append({
+
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+                "home_id": f["teams"]["home"]["id"],
+                "away_id": f["teams"]["away"]["id"],
+                "league": f["league"]["name"],
+                "league_id": f["league"]["id"],
+                "time": f["fixture"]["date"]
+
+            })
+
+    except Exception as e:
+
+        print("Erro próximos jogos:", e)
+
+    return matches
+
+
+def get_matches_today():
+
+    matches = fetch_api_football()
+
+    if not matches:
+
+        print("⚠ Nenhum jogo hoje — buscando próximos")
+
+        matches = fetch_next_matches()
 
     return matches
