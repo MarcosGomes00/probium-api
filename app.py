@@ -1,49 +1,31 @@
-from dotenv import load_dotenv
-load_dotenv()
-
 from flask import Flask
 from config import Config
 from services.database import db
-from services.telegram_bot import init_telegram
-from services.scheduler import start_scheduler
-from routes.predict import predict_bp
-from routes.stats import stats_bp
-from middleware.error_handler import register_error_handlers
+from sqlalchemy import text
+
+app = Flask(__name__)
+app.config.from_object(Config)
+
+db.init_app(app)
 
 
-def create_app():
+with app.app_context():
 
-    app = Flask(__name__)
-    app.config.from_object(Config)
+    db.engine.execute(text("""
 
-    db.init_app(app)
+    CREATE TABLE IF NOT EXISTS matches_history (
 
-    register_error_handlers(app)
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        league TEXT,
+        season TEXT,
+        date TEXT,
 
-    app.register_blueprint(predict_bp)
-    app.register_blueprint(stats_bp)
+        home_team TEXT,
+        away_team TEXT,
 
-    @app.route("/")
-    def home():
-        return {"status": "probium api online"}
+        home_goals INTEGER,
+        away_goals INTEGER
 
-    @app.route("/health")
-    def health():
-        return {"status": "ok"}
+    )
 
-    with app.app_context():
-
-        db.create_all()
-
-        init_telegram(app)
-
-        start_scheduler(app)
-
-    return app
-
-
-app = create_app()
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    """))
