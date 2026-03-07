@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import random
 
 from services.data_source import get_matches_today
@@ -6,8 +6,10 @@ from services.poisson_model import over25_prob, btts_prob
 from services.telegram_bot import send_bet_message
 
 
-MIN_PROB = 0.57
-MAX_BETS = 5
+MIN_PROB = 0.60
+
+# controle para não repetir envio
+sent_games = set()
 
 
 def run_pipeline():
@@ -24,59 +26,59 @@ def run_pipeline():
 
     for m in matches:
 
-        home = m.get("home")
-        away = m.get("away")
-        league = m.get("league")
-        kickoff_raw = m.get("time")
+        home = m["home"]
+        away = m["away"]
+        league = m["league"]
+        kickoff = m["time"]
 
         try:
-            kickoff_dt = datetime.fromisoformat(
-                kickoff_raw.replace("Z", "+00:00")
-            )
+            kickoff_dt = datetime.fromisoformat(kickoff.replace("Z","+00:00"))
         except:
             continue
 
         diff = kickoff_dt - now
+        minutes = diff.total_seconds() / 60
 
-        # apenas jogos que começam em até 1 hora
-        if not (timedelta(minutes=0) < diff <= timedelta(hours=1)):
+        # enviar somente jogos que começam em até 60 minutos
+        if minutes > 60 or minutes < 0:
             continue
 
-        kickoff = kickoff_dt.strftime("%H:%M")
+        game_id = f"{home}-{away}-{kickoff}"
 
-        home_attack = random.uniform(1.2, 2.2)
-        away_attack = random.uniform(1.0, 2.0)
+        if game_id in sent_games:
+            continue
+
+        home_attack = random.uniform(1.2,2.2)
+        away_attack = random.uniform(1.0,2.0)
 
         over = over25_prob(home_attack, away_attack)
         btts = btts_prob(home_attack, away_attack)
         under = 1 - over
 
-        market = None
-        prob = 0
+        markets = {
+            "OVER 2.5": over,
+            "BTTS SIM": btts,
+            "UNDER 2.5": under
+        }
 
-        if over > MIN_PROB:
-            market = "OVER 2.5"
-            prob = over
+        market = max(markets, key=markets.get)
+        prob = markets[market]
 
-        elif btts > MIN_PROB:
-            market = "BTTS SIM"
-            prob = btts
+        if prob < MIN_PROB:
+            continue
 
-        elif under > MIN_PROB:
-            market = "UNDER 2.5"
-            prob = under
+        bets.append({
+            "home": home,
+            "away": away,
+            "league": league,
+            "market": market,
+            "prob": round(prob*100,1),
+            "kickoff": kickoff_dt.strftime("%H:%M"),
+            "odd": round(random.uniform(1.6,2.2),2),
+            "ev": "+EV"
+        })
 
-        if market:
-
-            bets.append({
-                "home": home,
-                "away": away,
-                "league": league,
-                "kickoff": kickoff,
-                "market": market,
-                "prob": round(prob * 100, 2),
-                "odd": round(random.uniform(1.60, 2.20), 2)
-            })
+        sent_games.add(game_id)
 
     if not bets:
 
@@ -85,14 +87,16 @@ def run_pipeline():
 
     bets = sorted(bets, key=lambda x: x["prob"], reverse=True)
 
-    best_bets = bets[:MAX_BETS]
+    # limitar a 5 apostas
+    bets = bets[:5]
 
-    print(f"🎯 {len(best_bets)} apostas selecionadas")
+    print(f"🎯 {len(bets)} apostas selecionadas")
 
-    for bet in best_bets:
+    for bet in bets:
+
         send_bet_message(bet)
 
-    print("📤 Mensagens enviadas para Telegram")
+    print("📤 Mensagens enviadas no Telegram")
 
 
 if __name__ == "__main__":
