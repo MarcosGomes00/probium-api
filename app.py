@@ -1,31 +1,30 @@
 from flask import Flask
 from config import Config
 from services.database import db
-from sqlalchemy import text
+
+from routes.predict import predict_bp
+from routes.stats import stats_bp
+
+from services.scheduler import start_scheduler
+from services.telegram_bot import init_bot
+
 
 app = Flask(__name__)
 app.config.from_object(Config)
 
 db.init_app(app)
 
+# registrar rotas
+app.register_blueprint(predict_bp)
+app.register_blueprint(stats_bp)
 
-with app.app_context():
+# iniciar bot telegram
+init_bot()
 
-    db.engine.execute(text("""
+# iniciar scheduler
+start_scheduler()
 
-    CREATE TABLE IF NOT EXISTS matches_history (
 
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        league TEXT,
-        season TEXT,
-        date TEXT,
-
-        home_team TEXT,
-        away_team TEXT,
-
-        home_goals INTEGER,
-        away_goals INTEGER
-
-    )
-
-    """))
+@app.route("/")
+def home():
+    return {"status": "PROBIUM AI running"}
