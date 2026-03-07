@@ -1,58 +1,40 @@
 import requests
+from config import Config
 
-# =========================
-# CONFIG TELEGRAM
-# =========================
+def mandar_analises_para_grupo(bilhetes):
+    if not bilhetes:
+        enviar_mensagem("⚠️ <b>Aviso:</b> O sistema rastreou os dados de hoje e não encontrou oportunidades estatísticas viáveis para operar com segurança máxima.")
+        return
 
-BOT_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
-CHAT_ID = "-1003814625223"
+    for aposta in bilhetes:
+        texto_formatado = (
+            f"🏆 <b>ANÁLISE DE ALTA PRECISÃO IA</b>\n"
+            f"🌐 <b>Torneio:</b> {aposta['liga']}\n\n"
+            f"⚽ <b>Confronto:</b> {aposta['jogo']}\n"
+            f"🕒 <b>Início:</b> {aposta['horario'][:16].replace('T', ' ')}\n\n"
+            f"🎯 <b>PALPITE INDICADO:</b>\n"
+            f"💸 {aposta['palpite']}\n\n"
+            f"📊 <b>Probabilidade Matemática:</b> {aposta['prob']}%\n"
+            f"💹 <b>Odd Justa Projetada:</b> @{aposta['odd']}\n\n"
+            f"🔥 <i>Análise fundamentada 100% em retrospecto e Head-to-Head histórico.</i>"
+        )
+        enviar_mensagem(texto_formatado)
 
-
-# =========================
-# ENVIAR MENSAGEM
-# =========================
-
-def send_message(message):
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
+def enviar_mensagem(texto):
+    url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN_1}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
+        "chat_id": Config.TELEGRAM_CHAT_ID,
+        "text": texto,
+        "parse_mode": "HTML"
     }
-
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("Sinal enviado ao Telegram com sucesso.")
+        else:
+            print(f"Erro na comunicação com o Telegram: {response.text}")
     except Exception as e:
-        print("Telegram error:", e)
-
-
-# =========================
-# MENSAGEM PREMIUM COMPACTA
-# =========================
-
-def send_bet_message(bet):
-
-    home = bet.get("home")
-    away = bet.get("away")
-    league = bet.get("league", "Liga")
-    kickoff = bet.get("kickoff", "--:--")
-    market = bet.get("market")
-    prob = bet.get("prob")
-    odd = bet.get("odd")
-
-    message = (
-        f"📊 *PROBIUM AI*\n\n"
-        f"🏆 {league}\n"
-        f"⚽ {home} vs {away}\n"
-        f"⏰ {kickoff}\n\n"
-        f"🎯 *{market}*\n"
-        f"📈 Prob: *{prob}%* | 📉 Odd: *{odd}*"
-    )
-
-    send_message(message)
-
+        print(f"Falha técnica ao conectar com o Telegram: {e}")
 
 def init_bot():
-    print("🤖 Telegram bot initialized")
+    print("Módulo do Telegram carregado com êxito.")

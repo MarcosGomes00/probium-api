@@ -1,41 +1,26 @@
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
-from services.probium_pipeline import run_pipeline
-from services.reports.daily_report import generate_report
+from services.probium_pipeline import analisar_jogos_e_gerar_bilhetes
+from services.telegram_bot import mandar_analises_para_grupo
 
-
-scheduler = BackgroundScheduler()
-
+def rotina_automatica_das_15h30():
+    print("Gatilho das 15:30 ativado. Iniciando operações analíticas...")
+    analises = analisar_jogos_e_gerar_bilhetes()
+    mandar_analises_para_grupo(analises)
+    print("Rotina analítica diária concluída.")
 
 def start_scheduler(app):
-
-    print("🚀 Scheduler iniciado")
-
-    # ===============================
-    # SCANNER DE JOGOS
-    # ===============================
-
+    scheduler = BackgroundScheduler()
+    fuso_horario_br = pytz.timezone("America/Sao_Paulo")
+    
+    # Configuração para rodar diariamente às 15:30 rigorosamente.
     scheduler.add_job(
-        run_pipeline,
-        "interval",
-        minutes=5,
-        id="scan_matches",
-        replace_existing=True
+        func=rotina_automatica_das_15h30, 
+        trigger=CronTrigger(hour=15, minute=30, timezone=fuso_horario_br),
+        id='job_operacao_principal'
     )
-
-    # ===============================
-    # RELATÓRIO DIÁRIO
-    # ===============================
-
-    scheduler.add_job(
-        generate_report,
-        "cron",
-        hour=23,
-        minute=0,
-        id="daily_report",
-        replace_existing=True
-    )
-
+    
     scheduler.start()
-
-    print("✅ Scheduler ativo")
+    print("Automação configurada. O sistema disparará as análises todos os dias às 15:30 (Horário de Brasília).")

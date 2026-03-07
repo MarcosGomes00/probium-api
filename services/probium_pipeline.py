@@ -1,112 +1,88 @@
-from datetime import datetime, timezone
-from collections import defaultdict
+import requests
+from config import Config
+from datetime import datetime, timedelta
 
-from services.data_source import get_matches_today
-from services.poisson_model import over25_prob, btts_prob
-from services.telegram_bot import send_bet_message
+def analisar_jogos_e_gerar_bilhetes():
+    print("Buscando partidas futuras na API...")
+    
+    url_fixtures = "https://v3.football.api-sports.io/fixtures"
+    url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
+    headers = {"x-apisports-key": Config.API_FOOTBALL_KEY}
+    
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    futuro = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    
+    params_busca = {
+        "from": hoje,
+        "to": futuro,
+        "timezone": "America/Sao_Paulo"
+    }
+    
+    response = requests.get(url_fixtures, headers=headers, params=params_busca)
+    jogos = response.json().get("response", [])
+    
+    if not jogos:
+        print("Nenhuma partida encontrada para este período.")
+        return []
 
+    ligas_premium = [1, 2, 13, 39, 71, 140, 135, 78, 61] 
+    bilhetes_aprovados = []
 
-MIN_PROB = 0.60
+    for jogo in jogos:
+        liga_id = jogo["league"]["id"]
+        
+        if liga_id in ligas_premium and jogo["fixture"]["status"]["short"] == "NS":
+            time_casa = jogo["teams"]["home"]["name"]
+            id_casa = jogo["teams"]["home"]["id"]
+            time_fora = jogo["teams"]["away"]["name"]
+            id_fora = jogo["teams"]["away"]["id"]
+            data_hora = jogo["fixture"]["date"]
+            
+            try:
+                h2h_params = {"h2h": f"{id_casa}-{id_fora}", "last": 10}
+                resp_h2h = requests.get(url_h2h, headers=headers, params=h2h_params)
+                historico = resp_h2h.json().get("response", [])
+                
+                if not historico: 
+                    continue 
+                
+                vitorias_casa = 0
+                gols_totais = 0
+                
+                for confronto in historico:
+                    gol_c = confronto["goals"]["home"]
+                    gol_f = confronto["goals"]["away"]
+                    if gol_c is not None and gol_f is not None:
+                        gols_totais += (gol_c + gol_f)
+                        if gol_c > gol_f: 
+                            vitorias_casa += 1
 
-# evita repetir jogos
-sent_games = set()
+                probabilidade = (vitorias_casa / len(historico)) * 100
+                media_gols = gols_totais / len(historico)
+                
+                if probabilidade >= 65.0:
+                    bilhetes_aprovados.append({
+                        "liga": jogo["league"]["name"],
+                        "jogo": f"{time_casa} x {time_fora}",
+                        "horario": data_hora,
+                        "palpite": f"Vitória do {time_casa}",
+                        "prob": round(probabilidade, 1),
+                        "odd": round((100 / probabilidade) + 0.35, 2)
+                    })
+                elif media_gols > 2.7:
+                    prob_gols = round((media_gols / 4.0) * 100, 1) if media_gols < 4.0 else 92.0
+                    bilhetes_aprovados.append({
+                        "liga": jogo["league"]["name"],
+                        "jogo": f"{time_casa} x {time_fora}",
+                        "horario": data_hora,
+                        "palpite": "Total de Gols (Acima de 2.5)",
+                        "prob": prob_gols,
+                        "odd": round((100 / prob_gols) + 0.40, 2) if prob_gols > 0 else 1.50
+                    })
+                    
+            except Exception as e:
+                print(f"Erro ao processar jogo {time_casa} x {time_fora}: {e}")
+                continue
 
-
-def run_pipeline():
-
-    print("🔎 PROBIUM analisando jogos...")
-
-    matches = get_matches_today()
-
-    print(f"⚽ {len(matches)} jogos encontrados")
-
-    now = datetime.now(timezone.utc)
-
-    bets_by_hour = defaultdict(list)
-
-    for m in matches:
-
-        home = m["home"]
-        away = m["away"]
-        league = m["league"]
-        kickoff = m["time"]
-
-        try:
-            kickoff_dt = datetime.fromisoformat(kickoff.replace("Z","+00:00"))
-        except:
-            continue
-
-        diff = kickoff_dt - now
-        minutes = diff.total_seconds() / 60
-
-        # somente jogos que começam em até 60 min
-        if minutes > 60 or minutes < 0:
-            continue
-
-        game_id = f"{home}-{away}-{kickoff}"
-
-        if game_id in sent_games:
-            continue
-
-        # força ofensiva simples baseada em média de gols de ligas
-        home_attack = 1.6
-        away_attack = 1.4
-
-        over = over25_prob(home_attack, away_attack)
-        btts = btts_prob(home_attack, away_attack)
-        under = 1 - over
-
-        markets = {
-            "OVER 2.5": over,
-            "BTTS SIM": btts,
-            "UNDER 2.5": under
-        }
-
-        market = max(markets, key=markets.get)
-        prob = markets[market]
-
-        if prob < MIN_PROB:
-            continue
-
-        bet = {
-            "home": home,
-            "away": away,
-            "league": league,
-            "market": market,
-            "prob": round(prob * 100, 1),
-            "kickoff": kickoff_dt.strftime("%H:%M"),
-            "odd": 1.85,
-            "ev": "+EV"
-        }
-
-        bets_by_hour[bet["kickoff"]].append(bet)
-
-        sent_games.add(game_id)
-
-    if not bets_by_hour:
-
-        print("⚠ Nenhuma aposta encontrada")
-        return
-
-    total_sent = 0
-
-    for hour, bets in bets_by_hour.items():
-
-        bets = sorted(bets, key=lambda x: x["prob"], reverse=True)
-
-        # enviar apenas TOP 3 daquele horário
-        top_bets = bets[:3]
-
-        print(f"🎯 {len(top_bets)} apostas para {hour}")
-
-        for bet in top_bets:
-
-            send_bet_message(bet)
-
-            total_sent += 1
-
-    print(f"📤 {total_sent} apostas enviadas no Telegram")
-
-
-if __name__ == "__main__":
-    run_pipeline()
+    # Retorna as 3 melhores análises encontradas
+    return sorted(bilhetes_aprovados, key=lambda x: x["prob"], reverse=True)[:3]
