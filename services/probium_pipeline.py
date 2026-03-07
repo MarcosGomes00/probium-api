@@ -2,87 +2,79 @@ import requests
 from config import Config
 from datetime import datetime, timedelta
 
-def analisar_jogos_e_gerar_bilhetes():
-    print("Buscando partidas futuras na API...")
+def analisa_ultimos_5(id_time, headers):
+    """Busca os ultimos 5 jogos gerais do time (Como ele vem na temporada)"""
+    url = f"https://v3.football.api-sports.io/fixtures?team={id_time}&last=5"
+    jogos = requests.get(url, headers=headers).json().get("response", [])
     
-    url_fixtures = "https://v3.football.api-sports.io/fixtures"
-    url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
-    headers = {"x-apisports-key": Config.API_FOOTBALL_KEY}
-    
-    hoje = datetime.now().strftime("%Y-%m-%d")
-    futuro = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
-    
-    params_busca = {
-        "from": hoje,
-        "to": futuro,
-        "timezone": "America/Sao_Paulo"
-    }
-    
-    response = requests.get(url_fixtures, headers=headers, params=params_busca)
-    jogos = response.json().get("response", [])
-    
-    if not jogos:
-        print("Nenhuma partida encontrada para este período.")
-        return []
-
-    ligas_premium = [1, 2, 13, 39, 71, 140, 135, 78, 61] 
-    bilhetes_aprovados = []
-
-    for jogo in jogos:
-        liga_id = jogo["league"]["id"]
+    gols_feitos, gols_sofridos, jogos_over, jogos_btts, vitorias = 0, 0, 0, 0, 0
+    for j in jogos:
+        g_home, g_away = j["goals"]["home"], j["goals"]["away"]
+        if g_home is None: continue
         
-        if liga_id in ligas_premium and jogo["fixture"]["status"]["short"] == "NS":
-            time_casa = jogo["teams"]["home"]["name"]
-            id_casa = jogo["teams"]["home"]["id"]
-            time_fora = jogo["teams"]["away"]["name"]
-            id_fora = jogo["teams"]["away"]["id"]
-            data_hora = jogo["fixture"]["date"]
+        total = g_home + g_away
+        if total > 2.5: jogos_over += 1
+        if g_home > 0 and g_away > 0: jogos_btts += 1
+        
+        eh_casa = j["teams"]["home"]["id"] == id_time
+        if eh_casa:
+            if g_home > g_away: vitorias += 1
+            gols_feitos += g_home
+            gols_sofridos += g_away
+        else:
+            if g_away > g_home: vitorias += 1
+            gols_feitos += g_away
+            gols_sofridos += g_home
             
-            try:
-                h2h_params = {"h2h": f"{id_casa}-{id_fora}", "last": 10}
-                resp_h2h = requests.get(url_h2h, headers=headers, params=h2h_params)
-                historico = resp_h2h.json().get("response", [])
-                
-                if not historico: 
-                    continue 
-                
-                vitorias_casa = 0
-                gols_totais = 0
-                
-                for confronto in historico:
-                    gol_c = confronto["goals"]["home"]
-                    gol_f = confronto["goals"]["away"]
-                    if gol_c is not None and gol_f is not None:
-                        gols_totais += (gol_c + gol_f)
-                        if gol_c > gol_f: 
-                            vitorias_casa += 1
+    return {"over_taxa": jogos_over/5, "btts_taxa": jogos_btts/5, "vitoria_taxa": vitorias/5}
 
-                probabilidade = (vitorias_casa / len(historico)) * 100
-                media_gols = gols_totais / len(historico)
-                
-                if probabilidade >= 65.0:
-                    bilhetes_aprovados.append({
-                        "liga": jogo["league"]["name"],
-                        "jogo": f"{time_casa} x {time_fora}",
-                        "horario": data_hora,
-                        "palpite": f"Vitória do {time_casa}",
-                        "prob": round(probabilidade, 1),
-                        "odd": round((100 / probabilidade) + 0.35, 2)
-                    })
-                elif media_gols > 2.7:
-                    prob_gols = round((media_gols / 4.0) * 100, 1) if media_gols < 4.0 else 92.0
-                    bilhetes_aprovados.append({
-                        "liga": jogo["league"]["name"],
-                        "jogo": f"{time_casa} x {time_fora}",
-                        "horario": data_hora,
-                        "palpite": "Total de Gols (Acima de 2.5)",
-                        "prob": prob_gols,
-                        "odd": round((100 / prob_gols) + 0.40, 2) if prob_gols > 0 else 1.50
-                    })
-                    
-            except Exception as e:
-                print(f"Erro ao processar jogo {time_casa} x {time_fora}: {e}")
-                continue
+def motor_deep_analysis_diario():
+    """Faz a varredura da deep-web dos stats de futebol pro dia"""
+    headers = {"x-apisports-key": Config.API_FOOTBALL_KEY}
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    url = "https://v3.football.api-sports.io/fixtures"
+    
+    jogos_do_dia = requests.get(url, headers=headers, params={"date": hoje, "timezone": "America/Sao_Paulo"}).json().get("response", [])
+    
+    ligas_premium = [1, 2, 13, 39, 71, 140, 135, 78, 61]
+    lista_ouro = []
 
-    # Retorna as 3 melhores análises encontradas
-    return sorted(bilhetes_aprovados, key=lambda x: x["prob"], reverse=True)[:3]
+    for j in jogos_do_dia:
+        if j["league"]["id"] in ligas_premium and j["fixture"]["status"]["short"] == "NS":
+            fix_id = j["fixture"]["id"]
+            casa_id, fora_id = j["teams"]["home"]["id"], j["teams"]["away"]["id"]
+            nome_casa, nome_fora = j["teams"]["home"]["name"], j["teams"]["away"]["name"]
+            
+            # Cruzando como vêm jogando ultimamente na vida real
+            fase_casa = analisa_ultimos_5(casa_id, headers)
+            fase_fora = analisa_ultimos_5(fora_id, headers)
+            
+            # Médias de Tendência Matemática
+            media_vitoria_casa = fase_casa["vitoria_taxa"]
+            media_over = (fase_casa["over_taxa"] + fase_fora["over_taxa"]) / 2
+            media_btts = (fase_casa["btts_taxa"] + fase_fora["btts_taxa"]) / 2
+
+            mercado, prob = None, 0
+            
+            # Definição Criteriosa (Mínimo de 80% de reincidência para ser call validada)
+            if media_vitoria_casa >= 0.80:
+                mercado, mercado_codigo = f"Vitória - {nome_casa}", "HOME"
+                prob = media_vitoria_casa * 100
+            elif media_over >= 0.80:
+                mercado, mercado_codigo = "Mais de 2.5 Gols", "OVER25"
+                prob = media_over * 100
+            elif media_btts >= 0.80:
+                mercado, mercado_codigo = "Ambas Equipes Marcam (SIM)", "BTTS"
+                prob = media_btts * 100
+            
+            if mercado:
+                lista_ouro.append({
+                    "fix_id": fix_id, "jogo": f"{nome_casa} x {nome_fora}",
+                    "horario": j["fixture"]["date"], "mercado": mercado, 
+                    "mercado_codigo": mercado_codigo, "prob": round(prob, 1),
+                    "odd": round((100/prob)+0.35, 2)
+                })
+
+    # Retorna as 3 mais prováveis (Highest EV Edge)
+    lista_ouro.sort(key=lambda x: x["prob"], reverse=True)
+    return lista_ouro[:3]
