@@ -1,6 +1,3 @@
-pip install requests
-
-$codigo = @'
 import requests
 import time
 from datetime import datetime
@@ -114,7 +111,3 @@ if __name__ == "__main__":
     while True:
         processar_jogos_e_enviar()
         time.sleep(600)
-'@
-
-$codigo | Out-File -FilePath "bot_real.py" -Encoding utf8
-python bot_real.py
