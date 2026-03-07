@@ -13,7 +13,7 @@ class Config:
 
 
     # API Football
-    API_FOOTBALL_KEY = "a1b4dc55ed3248a09e8b8582e4dbc0c9"
+    API_FOOTBALL_KEY = "1cd3cb39658509019bdb1cdffff22c39"
 
 
     # Odds API

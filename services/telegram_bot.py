@@ -9,7 +9,7 @@ CHAT_ID = "-1003814625223"
 
 
 # =========================
-# ENVIAR MENSAGEM SIMPLES
+# ENVIAR MENSAGEM
 # =========================
 
 def send_message(message):
@@ -24,59 +24,35 @@ def send_message(message):
 
     try:
         requests.post(url, json=payload, timeout=10)
-
     except Exception as e:
         print("Telegram error:", e)
 
 
 # =========================
-# MENSAGEM PROFISSIONAL
+# MENSAGEM PREMIUM COMPACTA
 # =========================
 
 def send_bet_message(bet):
 
     home = bet.get("home")
     away = bet.get("away")
+    league = bet.get("league", "Liga")
+    kickoff = bet.get("kickoff", "--:--")
     market = bet.get("market")
     prob = bet.get("prob")
     odd = bet.get("odd")
-    ev = bet.get("ev")
-    league = bet.get("league", "Liga desconhecida")
-    kickoff = bet.get("kickoff", "--:--")
 
-    message = f"""
-📊 *PROBIUM AI — ANÁLISE DE PARTIDA*
-
-🏆 *{league}*
-
-⚽ *{home} (Casa)*  
-✈️ *{away} (Visitante)*
-
-⏰ *Horário:* {kickoff}
-
-━━━━━━━━━━━━━━━
-
-📈 *Probabilidade:* {prob}%
-📉 *Odd média:* {odd}
-💰 *Value Bet:* {ev}
-
-━━━━━━━━━━━━━━━
-
-🎯 *Mercado recomendado*
-➡️ {market}
-
-━━━━━━━━━━━━━━━
-
-🤖 *Análise gerada por*  
-PROBIUM AI ENGINE
-"""
+    message = (
+        f"📊 *PROBIUM AI*\n\n"
+        f"🏆 {league}\n"
+        f"⚽ {home} vs {away}\n"
+        f"⏰ {kickoff}\n\n"
+        f"🎯 *{market}*\n"
+        f"📈 Prob: *{prob}%* | 📉 Odd: *{odd}*"
+    )
 
     send_message(message)
 
-
-# =========================
-# INICIAR BOT
-# =========================
 
 def init_bot():
     print("🤖 Telegram bot initialized")

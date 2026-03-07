@@ -1,62 +1,78 @@
 import math
 
 
+# =========================
+# POISSON BASE
+# =========================
+
 def poisson_probability(lmbda, k):
+
+    lmbda = float(lmbda)
+
     return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
 
-def match_prediction(home_attack, home_defense, away_attack, away_defense):
-
-    home_lambda = home_attack * away_defense
-    away_lambda = away_attack * home_defense
-
-    home_win = 0
-    draw = 0
-    away_win = 0
-
-    for i in range(6):
-        for j in range(6):
-
-            p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
-
-            if i > j:
-                home_win += p
-            elif i == j:
-                draw += p
-            else:
-                away_win += p
-
-    return {
-        "home_win": home_win,
-        "draw": draw,
-        "away_win": away_win
-    }
-
+# =========================
+# OVER 2.5 GOALS
+# =========================
 
 def over25_prob(home_lambda, away_lambda):
+
+    home_lambda = float(home_lambda)
+    away_lambda = float(away_lambda)
 
     prob = 0
 
     for i in range(6):
+
         for j in range(6):
 
-            goals = i + j
             p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
 
-            if goals > 2:
+            if i + j > 2:
+
                 prob += p
 
     return prob
 
 
+# =========================
+# BOTH TEAMS SCORE
+# =========================
+
 def btts_prob(home_lambda, away_lambda):
+
+    home_lambda = float(home_lambda)
+    away_lambda = float(away_lambda)
 
     prob = 0
 
-    for i in range(1,6):
-        for j in range(1,6):
+    for i in range(1, 6):
 
-            p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
-            prob += p
+        for j in range(1, 6):
+
+            prob += poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
 
     return prob
+
+
+# =========================
+# MATCH SCORE PROBABILITY
+# =========================
+
+def match_prediction(home_lambda, away_lambda):
+
+    home_lambda = float(home_lambda)
+    away_lambda = float(away_lambda)
+
+    results = {}
+
+    for i in range(5):
+
+        for j in range(5):
+
+            p = poisson_probability(home_lambda, i) * poisson_probability(away_lambda, j)
+
+            results[f"{i}-{j}"] = round(p, 4)
+
+    return results
