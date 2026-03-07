@@ -23,11 +23,9 @@ def send_message(message):
     }
 
     try:
-
         requests.post(url, json=payload, timeout=10)
 
     except Exception as e:
-
         print("Telegram error:", e)
 
 
@@ -43,11 +41,18 @@ def send_bet_message(bet):
     prob = bet.get("prob")
     odd = bet.get("odd")
     ev = bet.get("ev")
+    league = bet.get("league", "Liga desconhecida")
+    kickoff = bet.get("kickoff", "--:--")
 
     message = f"""
 📊 *PROBIUM AI — ANÁLISE DE PARTIDA*
 
-⚽ *{home} vs {away}*
+🏆 *{league}*
+
+⚽ *{home} (Casa)*  
+✈️ *{away} (Visitante)*
+
+⏰ *Horário:* {kickoff}
 
 ━━━━━━━━━━━━━━━
 
@@ -62,8 +67,8 @@ def send_bet_message(bet):
 
 ━━━━━━━━━━━━━━━
 
-🤖 Análise gerada por  
-*PROBIUM AI ENGINE*
+🤖 *Análise gerada por*  
+PROBIUM AI ENGINE
 """
 
     send_message(message)
