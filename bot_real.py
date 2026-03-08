@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from services.result_checker import check_results
 from services.stats_analyzer import check_advanced_stats
+from services.auto_learning import is_league_profitable  # 🧠 NOVO: Módulo de aprendizado
 
 # Configurações Reais
 API_KEY_ODDS = "6a1c0078b3ed09b42fbacee8f07e7cc3"
@@ -15,13 +16,16 @@ CHAT_ID = "-1003814625223"
 
 HISTORY_FILE = "bets_history.json"
 
+# 🏆 LIGAS ATUALIZADAS (Futebol Brasileiro, Sul-Americano, Europeu e NBA)
 LIGAS =[
-    "soccer_epl",
-    "soccer_spain_la_liga",
-    "soccer_brazil_campeonato",
-    "soccer_italy_serie_a",
-    "soccer_germany_bundesliga",
-    "basketball_nba"
+    "soccer_epl",                        # Premier League
+    "soccer_spain_la_liga",              # La Liga
+    "soccer_italy_serie_a",              # Serie A Itália
+    "soccer_germany_bundesliga",         # Bundesliga
+    "soccer_brazil_campeonato",          # Brasileirão
+    "soccer_brazil_copa_do_brasil",      # 🆕 Copa do Brasil
+    "soccer_conmebol_copa_libertadores", # 🆕 Libertadores
+    "basketball_nba"                     # NBA
 ]
 
 jogos_enviados = set()
@@ -43,11 +47,7 @@ def salvar_historico(bet_data):
 
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": texto,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
@@ -86,10 +86,17 @@ def processar_jogos_e_enviar():
                 odds = mercados[0]["outcomes"]
                 home_team = evento["home_team"]
                 away_team = evento["away_team"]
+                liga_nome = evento['sport_title']
                 is_nba = "basketball" in liga
 
                 odd_home = next((item["price"] for item in odds if item["name"] == home_team), 0)
                 if odd_home == 0: continue
+
+                # =========================================================
+                # 🧠 FILTRO 0: AUTO-APRENDIZADO (Verifica se a liga é lucrativa)
+                # =========================================================
+                if not is_league_profitable(liga_nome):
+                    continue # O robô pula essa liga porque aprendeu que está tomando RED nela!
 
                 # =========================================================
                 # 🛡️ FILTRO 1: ANTI-ARMADILHA DE ODD
@@ -127,7 +134,7 @@ def processar_jogos_e_enviar():
 
                         texto_msg = (
                             f"💎 <b>APOSTA PREMIUM LIBERADA</b> 💎\n\n"
-                            f"🏆 <b>Liga:</b> {evento['sport_title']}\n"
+                            f"🏆 <b>Liga:</b> {liga_nome}\n"
                             f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {int(minutos_faltando)} min)\n"
                             f"{emoji} <b>Jogo:</b> {home_team} x {away_team}\n\n"
                             f"🎯 <b>O QUE APOSTAR:</b>\n"
@@ -135,10 +142,11 @@ def processar_jogos_e_enviar():
                             f"📈 <b>Odd Mínima:</b> {odd_home}\n"
                             f"💰 <b>Gestão / Stake:</b> {stake} Unidades\n"
                             f"🔥 <b>Confiança:</b> {confianca}\n\n"
-                            f"📊 <b>Filtros Ativos:</b>\n"
-                            f"✅ Odds API (Valor Encontrado)\n"
+                            f"📊 <b>Filtros de IA Ativos:</b>\n"
+                            f"✅ Odds de Valor Encontrada\n"
                             f"✅ Histórico H2H Verificado\n"
-                            f"✅ Momento do Time Aprovado\n\n"
+                            f"✅ Fase do Time Aprovada\n"
+                            f"✅ Liga Lucrativa Confirmada 🧠\n\n"
                             f"<i>⚠️ Jogue com responsabilidade.</i>"
                         )
 
@@ -149,7 +157,7 @@ def processar_jogos_e_enviar():
                             "sport_key": liga,
                             "home": home_team,
                             "away": away_team,
-                            "league": evento["sport_title"],
+                            "league": liga_nome,
                             "odd": odd_home,
                             "prob": prob,
                             "ev": ev,
@@ -162,13 +170,13 @@ def processar_jogos_e_enviar():
                         })
 
                         jogos_enviados.add(jogo_id)
-                        print(f"🚀 Análise enviada: {home_team} x {away_team}")
+                        print(f"🚀 Análise enviada: {home_team} x {away_team} ({liga_nome})")
 
         except Exception as e:
             pass
 
 if __name__ == "__main__":
-    print("🤖 Bot Iniciado (Com Inteligência H2H de Histórico ativada)!")
+    print("🤖 Bot Iniciado (Agora com Auto-Aprendizado + Copa do Brasil + Libertadores)!")
     while True:
         processar_jogos_e_enviar()
         try:
