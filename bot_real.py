@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from services.result_checker import check_results
 from services.stats_analyzer import check_advanced_stats
-from services.auto_learning import is_league_profitable  # 🧠 NOVO: Módulo de aprendizado
+from services.auto_learning import is_league_profitable  # 🧠 Módulo de aprendizado
 
 # Configurações Reais
 API_KEY_ODDS = "6a1c0078b3ed09b42fbacee8f07e7cc3"
@@ -16,16 +16,16 @@ CHAT_ID = "-1003814625223"
 
 HISTORY_FILE = "bets_history.json"
 
-# 🏆 LIGAS ATUALIZADAS (Futebol Brasileiro, Sul-Americano, Europeu e NBA)
+# 🏆 LIGAS ATUALIZADAS
 LIGAS =[
-    "soccer_epl",                        # Premier League
-    "soccer_spain_la_liga",              # La Liga
-    "soccer_italy_serie_a",              # Serie A Itália
-    "soccer_germany_bundesliga",         # Bundesliga
-    "soccer_brazil_campeonato",          # Brasileirão
-    "soccer_brazil_copa_do_brasil",      # 🆕 Copa do Brasil
-    "soccer_conmebol_copa_libertadores", # 🆕 Libertadores
-    "basketball_nba"                     # NBA
+    "soccer_epl",                        
+    "soccer_spain_la_liga",              
+    "soccer_italy_serie_a",              
+    "soccer_germany_bundesliga",         
+    "soccer_brazil_campeonato",          
+    "soccer_brazil_copa_do_brasil",      
+    "soccer_conmebol_copa_libertadores", 
+    "basketball_nba"                     
 ]
 
 jogos_enviados = set()
@@ -55,14 +55,17 @@ def enviar_telegram(texto):
 
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Buscando jogos...")
+    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Buscando jogos (Todas as Seleções, Sharp Money e Kelly)...")
 
     for liga in LIGAS:
+        is_nba = "basketball" in liga
+        mercados_alvo = "h2h,totals,spreads" if is_nba else "h2h,totals,btts"
+        
         url = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/"
         parametros = {
             "apiKey": API_KEY_ODDS,
             "regions": "eu,uk,us",
-            "markets": "h2h",
+            "markets": mercados_alvo,
             "bookmakers": "bet365,pinnacle"
         }
 
@@ -80,51 +83,138 @@ def processar_jogos_e_enviar():
                 bookmakers = evento.get("bookmakers",[])
                 if not bookmakers: continue
 
-                mercados = bookmakers[0].get("markets",[])
-                if not mercados: continue
+                pinnacle = next((b for b in bookmakers if b["key"] == "pinnacle"), None)
+                bet365 = next((b for b in bookmakers if b["key"] == "bet365"), bookmakers[0])
 
-                odds = mercados[0]["outcomes"]
+                mercados_b365 = bet365.get("markets",[])
+                h2h_market = next((m for m in mercados_b365 if m["key"] == "h2h"), None)
+                if not h2h_market: continue
+
+                odds = h2h_market["outcomes"]
                 home_team = evento["home_team"]
                 away_team = evento["away_team"]
                 liga_nome = evento['sport_title']
-                is_nba = "basketball" in liga
 
                 odd_home = next((item["price"] for item in odds if item["name"] == home_team), 0)
-                if odd_home == 0: continue
+                odd_away = next((item["price"] for item in odds if item["name"] == away_team), 0)
+                odd_draw = next((item["price"] for item in odds if item["name"] == "Draw"), 0)
+
+                if odd_home == 0 or odd_away == 0: continue
 
                 # =========================================================
-                # 🧠 FILTRO 0: AUTO-APRENDIZADO (Verifica se a liga é lucrativa)
+                # 🎯 NOVO 1: PROBABILIDADES E EV PARA TODOS OS MERCADOS
                 # =========================================================
-                if not is_league_profitable(liga_nome):
-                    continue # O robô pula essa liga porque aprendeu que está tomando RED nela!
+                pin_h, pin_a, pin_d = odd_home, odd_away, odd_draw # Fallback caso não tenha Pinnacle
+                if pinnacle:
+                    pin_h2h = next((m for m in pinnacle.get("markets",[]) if m["key"] == "h2h"), None)
+                    if pin_h2h:
+                        p_odds = pin_h2h["outcomes"]
+                        pin_h = next((item["price"] for item in p_odds if item["name"] == home_team), odd_home)
+                        pin_a = next((item["price"] for item in p_odds if item["name"] == away_team), odd_away)
+                        pin_d = next((item["price"] for item in p_odds if item["name"] == "Draw"), odd_draw)
+
+                # Remove a margem da Pinnacle para achar a % Exata de cada cenário
+                margin = (1/pin_h) + (1/pin_a) + (1/pin_d if pin_d else 0)
+                prob_h = (1/pin_h) / margin if pin_h else 0
+                prob_a = (1/pin_a) / margin if pin_a else 0
+                prob_d = (1/pin_d) / margin if pin_d else 0
+
+                # Calcula o EV para Casa, Visitante e Empate na Bet365
+                ev_h = (prob_h * odd_home) - 1 if odd_home else -1
+                ev_a = (prob_a * odd_away) - 1 if odd_away else -1
+                ev_d = (prob_d * odd_draw) - 1 if odd_draw else -1
+
+                # Cria uma lista de oportunidades válidas
+                oportunidades =[]
+                if ev_h > 0: oportunidades.append(("Vitória Casa", home_team, odd_home, prob_h, ev_h, pin_h))
+                if ev_a > 0: oportunidades.append(("Vitória Visitante", away_team, odd_away, prob_a, ev_a, pin_a))
+                if not is_nba and ev_d > 0: oportunidades.append(("Empate", "Empate", odd_draw, prob_d, ev_d, pin_d))
+
+                if not oportunidades: continue
+
+                # Seleciona automaticamente a MAIOR OPORTUNIDADE MATEMÁTICA do jogo
+                melhor_op = max(oportunidades, key=lambda x: x[4])
+                selecao_tipo, selecao_nome, odd_b365, prob_justa, ev_real, odd_pin = melhor_op
+
+                # Só avança se o EV da melhor opção for maior que 2%
+                if ev_real < 0.02: continue
 
                 # =========================================================
-                # 🛡️ FILTRO 1: ANTI-ARMADILHA DE ODD
+                # 📈 NOVO 3: RASTREADOR DE SHARP MONEY (DROPPING ODDS)
                 # =========================================================
-                if odd_home < 1.25 or odd_home > 2.50: continue
+                sharp_money_alert = ""
+                # Se a Bet365 está pagando pelo menos 4% a mais que a Pinnacle, a odd da B365 está desatualizada!
+                if odd_b365 > (odd_pin * 1.04):
+                    sharp_money_alert = (
+                        f"🚨 <b>SHARP MONEY (ODD DESATUALIZADA)</b> 🚨\n"
+                        f"A Pinnacle já derrubou essa odd para <b>{odd_pin}</b> devido ao alto volume de dinheiro "
+                        f"profissional. A Bet365 está atrasada pagando <b>{odd_b365}</b>. Aposte rápido!\n\n"
+                    )
 
                 # =========================================================
-                # 🛡️ FILTRO 2: DADOS HISTÓRICOS (H2H e Forma Real)
+                # 💰 NOVO 4: CRITÉRIO DE KELLY (GESTÃO DE BANCA MATEMÁTICA)
                 # =========================================================
+                b = odd_b365 - 1
+                q = 1 - prob_justa
+                # Fórmula Full Kelly
+                kelly_full = prob_justa - (q / b)
+                # Usamos Quarter Kelly (25%) para segurança do caixa
+                stake_kelly_pct = (kelly_full * 0.25) * 100 
+                # Limitamos a no mínimo 0.5% e no máximo 3.0% da banca para evitar loucuras
+                stake_kelly_pct = max(0.5, min(stake_kelly_pct, 3.0))
+
+                # =========================================================
+                # SUGESTÕES SECUNDÁRIAS (GOLS PARA FUT, HANDICAP/PONTOS PARA NBA)
+                # =========================================================
+                sugestao_extra = ""
+                if is_nba:
+                    spread_point, spread_odd = "", 0
+                    spreads_market = next((m for m in mercados_b365 if m["key"] == "spreads"), None)
+                    if spreads_market:
+                        for out in spreads_market["outcomes"]:
+                            if out["name"] == home_team:
+                                spread_point = out.get("point", "")
+                                spread_odd = out["price"]
+                                break
+                    
+                    total_point, total_odd = "", 0
+                    totals_market = next((m for m in mercados_b365 if m["key"] == "totals"), None)
+                    if totals_market:
+                        for out in totals_market["outcomes"]:
+                            if out["name"] == "Over":
+                                total_point = out.get("point", "")
+                                total_odd = out["price"]
+                                break
+                    
+                    if spread_odd > 0: sugestao_extra += f"🏀 <b>Handicap Casa:</b> {home_team} {spread_point} (Odd {spread_odd})\n"
+                    if total_odd > 0: sugestao_extra += f"🔥 <b>Pontos Totais:</b> Mais de {total_point} pontos (Odd {total_odd})\n"
+                else:
+                    over25_odd, btts_odd = 0, 0
+                    totals_market = next((m for m in mercados_b365 if m["key"] == "totals"), None)
+                    if totals_market:
+                        for out in totals_market["outcomes"]:
+                            if out["name"] == "Over" and float(out.get("point", 0)) == 2.5:
+                                over25_odd = out["price"]
+                    
+                    btts_market = next((m for m in mercados_b365 if m["key"] == "btts"), None)
+                    if btts_market:
+                        for out in btts_market["outcomes"]:
+                            if out["name"] == "Yes": btts_odd = out["price"]
+
+                    if over25_odd > 0 and over25_odd <= 1.75:
+                        sugestao_extra = f"⚽ <b>Opção de Gols:</b> Over 2.5 (Odd {over25_odd})\n"
+                    elif btts_odd > 0 and btts_odd <= 1.80:
+                        sugestao_extra = f"⚽ <b>Opção de Gols:</b> Ambas Marcam - Sim (Odd {btts_odd})\n"
+
+                # Filtros
+                if not is_league_profitable(liga_nome): continue 
+                if odd_b365 < 1.25 or odd_b365 > 3.50: continue  # Margem ampliada para pegar Visitantes e Empates
+                
                 if not is_nba:
                     aprovado = check_advanced_stats(home_team, away_team)
-                    if not aprovado:
-                        print(f"❌ Aposta abortada pelas Estatísticas Avançadas: {home_team} x {away_team}")
-                        continue
+                    if not aprovado: continue
 
-                prob = 1 / odd_home
-                ev = prob * 0.12
-                edge = ev / 2
-
-                if is_nba:
-                    if odd_home <= 1.65: confianca = "🏀🔥 ELITE NBA"; stake = 2.0
-                    else: confianca = "🏀💪 FORTE NBA"; stake = 1.0
-                    emoji = "🏀"
-                else:
-                    if odd_home <= 1.55: confianca = "⚽🔥 ELITE"; stake = 2.0
-                    elif odd_home <= 1.85: confianca = "⚽💪 FORTE"; stake = 1.5
-                    else: confianca = "⚽👍 BOA"; stake = 1.0
-                    emoji = "⚽️"
+                emoji = "🏀" if is_nba else "⚽"
 
                 jogo_id = evento["id"]
                 minutos_faltando = (horario_br - agora_br).total_seconds() / 60
@@ -133,21 +223,25 @@ def processar_jogos_e_enviar():
                     if jogo_id not in jogos_enviados:
 
                         texto_msg = (
-                            f"💎 <b>APOSTA PREMIUM LIBERADA</b> 💎\n\n"
+                            f"💎 <b>APOSTA PREMIUM DETECTADA</b> 💎\n\n"
+                            f"{sharp_money_alert}"
                             f"🏆 <b>Liga:</b> {liga_nome}\n"
                             f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {int(minutos_faltando)} min)\n"
                             f"{emoji} <b>Jogo:</b> {home_team} x {away_team}\n\n"
-                            f"🎯 <b>O QUE APOSTAR:</b>\n"
-                            f"👉 <b>Vitória do {home_team} (Casa)</b>\n\n"
-                            f"📈 <b>Odd Mínima:</b> {odd_home}\n"
-                            f"💰 <b>Gestão / Stake:</b> {stake} Unidades\n"
-                            f"🔥 <b>Confiança:</b> {confianca}\n\n"
-                            f"📊 <b>Filtros de IA Ativos:</b>\n"
-                            f"✅ Odds de Valor Encontrada\n"
-                            f"✅ Histórico H2H Verificado\n"
-                            f"✅ Fase do Time Aprovada\n"
-                            f"✅ Liga Lucrativa Confirmada 🧠\n\n"
-                            f"<i>⚠️ Jogue com responsabilidade.</i>"
+                            f"🎯 <b>MERCADO DE MAIOR VALOR (+EV):</b>\n"
+                            f"👉 <b>{selecao_tipo}: {selecao_nome}</b>\n"
+                            f"📈 <b>Odd Atual (Bet365):</b> {odd_b365}\n"
+                        )
+                        
+                        if sugestao_extra: texto_msg += f"\n{sugestao_extra}"
+
+                        texto_msg += (
+                            f"\n💰 <b>Gestão de Banca (Critério de Kelly):</b>\n"
+                            f"Risco Calculado: Usar exatos <b>{stake_kelly_pct:.2f}%</b> da sua Banca.\n\n"
+                            f"📊 <b>Inteligência Matemática:</b>\n"
+                            f"✅ <b>Margem de Erro Casa/Pinnacle:</b> Vantagem de +{ev_real*100:.2f}%\n"
+                            f"✅ <b>Probabilidade Real (Sem Vig):</b> {prob_justa*100:.1f}%\n\n"
+                            f"<i>⚠️ Jogue com a gestão indicada acima.</i>"
                         )
 
                         enviar_telegram(texto_msg)
@@ -158,11 +252,11 @@ def processar_jogos_e_enviar():
                             "home": home_team,
                             "away": away_team,
                             "league": liga_nome,
-                            "odd": odd_home,
-                            "prob": prob,
-                            "ev": ev,
-                            "edge": edge,
-                            "stake": stake,
+                            "market_chosen": selecao_tipo,
+                            "odd": odd_b365,
+                            "prob": prob_justa, 
+                            "ev": ev_real,           
+                            "stake_perc": round(stake_kelly_pct, 2),
                             "checked": False,
                             "result": None,
                             "profit": 0,
@@ -170,13 +264,14 @@ def processar_jogos_e_enviar():
                         })
 
                         jogos_enviados.add(jogo_id)
-                        print(f"🚀 Análise enviada: {home_team} x {away_team} ({liga_nome})")
+                        print(f"🚀 Análise enviada: {selecao_nome} na odd {odd_b365} | EV: +{ev_real*100:.2f}%")
 
         except Exception as e:
             pass
 
 if __name__ == "__main__":
-    print("🤖 Bot Iniciado (Agora com Auto-Aprendizado + Copa do Brasil + Libertadores)!")
+    print("🤖 Bot Profissional Iniciado!")
+    print("✅ Módulos Ativos: Análise 360º (Visitantes/Empate) | Rastreador Sharp Money | Critério Kelly")
     while True:
         processar_jogos_e_enviar()
         try:
