@@ -6,17 +6,11 @@ import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-try:
-    from services.result_checker import check_results
-    from services.stats_analyzer import check_advanced_stats
-    from services.auto_learning import is_league_profitable
-except:
-    pass
-
 # ==========================================
 # CONFIGURAÇÕES REAIS E INTEGRAÇÃO DB
 # ==========================================
 API_KEY_ODDS = "6a1c0078b3ed09b42fbacee8f07e7cc3"
+API_FOOTBALL_KEY = "1cd3cb39658509019bdb1cdffff22c39" # Sua chave da API-Football
 TELEGRAM_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
 CHAT_ID = "-1003814625223"
 HISTORY_FILE = "bets_history.json"
@@ -37,6 +31,9 @@ LIGAS =[
 jogos_enviados = set()
 ultima_checagem_resultados = 0
 
+# ==========================================
+# FUNÇÕES DE BANCO DE DADOS E TELEGRAM
+# ==========================================
 def inicializar_banco():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -97,10 +94,68 @@ def enviar_telegram(texto):
     payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         requests.post(url, json=payload, timeout=10)
-    except Exception as e:
+    except Exception:
         pass
 
-# 🔥 NOVA FUNÇÃO ASIÁTICA: Lê Jogadores (Player Props), Handicap e Gols
+# ==========================================
+# HISTÓRICO H2H (API-FOOTBALL)
+# ==========================================
+def buscar_id_time(nome_time):
+    url = "https://v3.football.api-sports.io/teams"
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"search": nome_time}
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        data = resp.json()
+        if data.get("results", 0) > 0:
+            return data["response"][0]["team"]["id"]
+    except:
+        pass
+    return None
+
+def obter_historico_times(home_name, away_name):
+    home_id = buscar_id_time(home_name)
+    away_id = buscar_id_time(away_name)
+    
+    if not home_id or not away_id:
+        return "" # Não achou os IDs, não retorna texto de histórico
+
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    try:
+        url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
+        params_h2h = {"h2h": f"{home_id}-{away_id}", "last": 5}
+        resp = requests.get(url_h2h, headers=headers, params=params_h2h, timeout=10)
+        data = resp.json()
+        
+        if data.get("results", 0) > 0:
+            vitorias_home = 0
+            vitorias_away = 0
+            empates = 0
+            
+            for match in data["response"]:
+                if match["teams"]["home"]["winner"] and match["teams"]["home"]["id"] == home_id:
+                    vitorias_home += 1
+                elif match["teams"]["away"]["winner"] and match["teams"]["away"]["id"] == home_id:
+                    vitorias_home += 1
+                elif match["teams"]["home"]["winner"] and match["teams"]["home"]["id"] == away_id:
+                    vitorias_away += 1
+                elif match["teams"]["away"]["winner"] and match["teams"]["away"]["id"] == away_id:
+                    vitorias_away += 1
+                else:
+                    empates += 1
+            
+            msg = f"\n📚 <b>HISTÓRICO H2H (Últimos {data['results']}):</b>\n"
+            msg += f"✅ {home_name}: {vitorias_home} Vitórias\n"
+            msg += f"✅ {away_name}: {vitorias_away} Vitórias\n"
+            msg += f"➖ Empates: {empates}\n"
+            return msg
+    except Exception:
+        pass
+    return ""
+
+# ==========================================
+# BUSCA DE VALOR: ASIÁTICOS, TOTAIS E JOGADORES
+# ==========================================
 def buscar_valor_linhas_asiaticas(pinnacle, bet365, nome_mercado):
     oportunidades =[]
     pin_market = next((m for m in pinnacle.get("markets",[]) if m["key"] == nome_mercado), None)
@@ -114,7 +169,7 @@ def buscar_valor_linhas_asiaticas(pinnacle, bet365, nome_mercado):
         pt = out.get("point", "")
         if not pt: continue
         chave = f"{desc}_{pt}"
-        if chave not in grupos_pin: grupos_pin[chave] = []
+        if chave not in grupos_pin: grupos_pin[chave] =[]
         grupos_pin[chave].append(out)
 
     for chave, outs in grupos_pin.items():
@@ -132,6 +187,9 @@ def buscar_valor_linhas_asiaticas(pinnacle, bet365, nome_mercado):
                             oportunidades.append((mercado_pt, selecao, b_out["price"], prob, ev))
     return oportunidades
 
+# ==========================================
+# AUTO-GREEN (VERIFICAÇÃO DE RESULTADOS)
+# ==========================================
 def verificar_resultados_automatico():
     global ultima_checagem_resultados
     agora = time.time()
@@ -161,7 +219,6 @@ def verificar_resultados_automatico():
                 id_ap, esp, jogo_nome, mercado, selecao, odd, stake = aposta
                 if esp != esporte: continue
                 
-                # A API de placares não retorna dados de jogadores, então ignoramos Player Props no Auto-Green
                 if "Player" in mercado or "Jogador" in mercado: continue
                 
                 times = jogo_nome.split(" x ")
@@ -178,7 +235,6 @@ def verificar_resultados_automatico():
                 res_final = "RED"
                 lucro = -stake
                 
-                # Resoluções
                 if "Vitória Casa" in mercado and home_score > away_score: res_final = "GREEN"
                 elif "Vitória Visitante" in mercado and away_score > home_score: res_final = "GREEN"
                 elif "Ambas Marcam" in mercado:
@@ -216,15 +272,17 @@ def verificar_resultados_automatico():
     except Exception as e:
         print(f"Erro checagem DB: {e}")
 
+# ==========================================
+# LOOP PRINCIPAL: SCANNER DE JOGOS
+# ==========================================
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
     print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando H2H, DNB, BTTS, Player Props e Múltiplas...")
 
-    bilhetes_potenciais =[] # 🎫 Guarda as oportunidades para montar o Bilhete Duplo
+    bilhetes_potenciais =[] # 🎫 Guarda as oportunidades seguras para Bilhete Duplo
 
     for liga in LIGAS:
         is_nba = "basketball" in liga
-        # Adicionado os Player Props para o Futebol (Chutes ao gol)
         mercados_alvo = "h2h,totals,spreads,player_points" if is_nba else "h2h,totals,spreads,btts,player_shots_on_target"
         
         url = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/"
@@ -277,7 +335,7 @@ def processar_jogos_e_enviar():
                         if ev_n > 0.02: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
 
                 # 3. H2H E EMPATE ANULA (DNB)
-                pin_h2h = next((m for m in pinnacle.get("markets", []) if m["key"] == "h2h"), None)
+                pin_h2h = next((m for m in pinnacle.get("markets",[]) if m["key"] == "h2h"), None)
                 b365_h2h = next((m for m in bet365.get("markets",[]) if m["key"] == "h2h"), None)
                 
                 if pin_h2h and b365_h2h and len(pin_h2h["outcomes"]) >= 2:
@@ -341,6 +399,14 @@ def processar_jogos_e_enviar():
                 if 30 <= minutos_faltando <= 720:
                     if jogo_id not in jogos_enviados:
                         emoji = "🏀" if is_nba else "⚽"
+                        
+                        # HISTÓRICO H2H
+                        bloco_historico = ""
+                        if not is_nba:
+                            hist_msg = obter_historico_times(home_team, away_team)
+                            if hist_msg:
+                                bloco_historico = f"\n{hist_msg}"
+                        
                         texto_msg = (
                             f"💎 <b>APOSTA PREMIUM DETECTADA</b> 💎\n\n"
                             f"🏆 <b>Liga:</b> {evento['sport_title']}\n"
@@ -351,6 +417,7 @@ def processar_jogos_e_enviar():
                             f"📈 <b>Odd Atual:</b> {odd_b365:.2f}\n\n"
                             f"💰 <b>Gestão Inteligente:</b> {kelly_pct:.1f}% da Banca\n"
                             f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.1f}%\n"
+                            f"{bloco_historico}"
                         )
                         enviar_telegram(texto_msg)
                         jogos_enviados.add(jogo_id)
@@ -370,7 +437,6 @@ def processar_jogos_e_enviar():
     # 🎫 MÓDULO DE MÚLTIPLAS (BILHETE DUPLO)
     # ==========================================
     if len(bilhetes_potenciais) >= 2:
-        # Pega as 2 melhores apostas baseadas no EV
         bilhetes_potenciais.sort(key=lambda x: x['ev'], reverse=True)
         top_2 = bilhetes_potenciais[:2]
         
@@ -397,7 +463,7 @@ def processar_jogos_e_enviar():
 if __name__ == "__main__":
     inicializar_banco()
     print("🤖 Bot Institucional de Alta Performance Iniciado!")
-    print("✅ Módulos: DNB | BTTS | Asiáticos | Player Props | Bilhetes Duplos | Radar 12h")
+    print("✅ Módulos: DNB | BTTS | Asiáticos | Player Props | Bilhetes Duplos | Histórico H2H | Radar 12h")
     while True:
         processar_jogos_e_enviar()
         verificar_resultados_automatico()
