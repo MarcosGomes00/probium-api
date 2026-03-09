@@ -11,19 +11,24 @@ try:
     from services.stats_analyzer import check_advanced_stats
     from services.auto_learning import is_league_profitable
 except Exception as e:
-    print(f"⚠️ Aviso de importação (módulos extras não encontrados): {e}")
+    pass
 
 # ==========================================
-# CONFIGURAÇÕES REAIS E INTEGRAÇÃO DB
+# PLANO B: ROTAÇÃO DE CHAVES DA API
 # ==========================================
-API_KEY_ODDS = "6a1c0078b3ed09b42fbacee8f07e7cc3"
+# Suas 3 chaves = 1.500 requisições mensais (Modo Economia ativado para durar 30 dias)
+API_KEYS_ODDS =[
+    "6a1c0078b3ed09b42fbacee8f07e7cc3",  # Chave 1
+    "f05d340d10ad108aae44ed8b674519f7",  # Chave 2
+    "f4ffd9cc04c586e9e1d62266db35bb0a"   # Chave 3
+]
+
 API_FOOTBALL_KEY = "1cd3cb39658509019bdb1cdffff22c39" 
 TELEGRAM_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
 CHAT_ID = "-1003814625223"
 HISTORY_FILE = "bets_history.json"
 DB_FILE = "probum.db"
 
-# 🏆 LIGAS COMPLETAS (Incluindo FA Cup, Turquia, etc)
 LIGAS =[
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",              
     "soccer_germany_bundesliga", "soccer_france_ligue_one", "soccer_portugal_primeira_liga",
@@ -32,13 +37,40 @@ LIGAS =[
     "soccer_conmebol_copa_libertadores", "soccer_conmebol_copa_sudamericana",
     "soccer_argentina_primera_division", "soccer_mexico_ligamx", "soccer_usa_mls",
     "soccer_turkey_super_league", "soccer_belgium_first_div", "soccer_england_championship",
-    "soccer_england_fa_cup", # West Ham x Brentford
-    "soccer_uruguay_primera_division", # Ligas do Uruguai
+    "soccer_england_fa_cup", 
+    "soccer_uruguay_primera_division", 
     "basketball_nba", "basketball_euroleague", "basketball_ncaab"                     
 ]
 
 jogos_enviados = set()
 ultima_checagem_resultados = 0
+chave_odds_atual = 0 
+
+# ==========================================
+# GERENCIADOR DE REQUISIÇÕES (PLANO B)
+# ==========================================
+def fazer_requisicao_odds(url, parametros):
+    global chave_odds_atual
+    for tentativa in range(len(API_KEYS_ODDS)):
+        chave_teste = API_KEYS_ODDS[chave_odds_atual]
+        parametros["apiKey"] = chave_teste
+        try:
+            resposta = requests.get(url, params=parametros, timeout=15)
+            if resposta.status_code == 200:
+                restantes = resposta.headers.get('x-requests-remaining', '?')
+                print(f"📡[Chave {chave_odds_atual + 1}] OK! (Restam {restantes} reqs mensais)")
+                return resposta
+            elif resposta.status_code in[401, 429]:
+                print(f"❌[Chave {chave_odds_atual + 1}] Esgotada ou Inválida! Pulando para a próxima...")
+                chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
+            else:
+                return resposta 
+        except Exception as e:
+            print(f"⚠️ Erro de rede: {e}")
+            return None
+            
+    print("🚨 TODAS AS 3 CHAVES DE ODDS ESTOURARAM O LIMITE!")
+    return None
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_FILE)
@@ -80,34 +112,23 @@ def salvar_aposta_sistema(bet_data):
         ))
         conn.commit()
         conn.close()
-    except Exception as e: 
-        print(f"⚠️ Erro ao salvar aposta no Banco de Dados: {e}")
-
-    try:
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f: bets = json.load(f)
-        else: bets =[]
-        bets.append(bet_data)
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f: json.dump(bets, f, indent=2)
-    except Exception as e: 
-        print(f"⚠️ Erro ao salvar histórico JSON: {e}")
+    except: pass
 
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try: 
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e: 
-        print(f"⚠️ Erro ao enviar mensagem para o Telegram: {e}")
+    try: requests.post(url, json=payload, timeout=10)
+    except: pass
 
 def buscar_id_time(nome_time):
     url = "https://v3.football.api-sports.io/teams"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     try:
-        data = requests.get(url, headers=headers, params={"search": nome_time}, timeout=10).json()
+        req = requests.get(url, headers=headers, params={"search": nome_time}, timeout=10)
+        data = req.json()
+        if req.status_code == 403 or "errors" in data and data["errors"]: return None
         if data.get("results", 0) > 0: return data["response"][0]["team"]["id"]
-    except Exception as e: 
-        print(f"⚠️ Erro ao buscar ID do time {nome_time}: {e}")
+    except: pass
     return None
 
 def obter_historico_times(home_name, away_name):
@@ -117,16 +138,14 @@ def obter_historico_times(home_name, away_name):
 
     try:
         url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
-        data = requests.get(url_h2h, headers={"x-apisports-key": API_FOOTBALL_KEY}, params={"h2h": f"{home_id}-{away_id}", "last": 5}, timeout=10).json()
-        
+        req = requests.get(url_h2h, headers={"x-apisports-key": API_FOOTBALL_KEY}, params={"h2h": f"{home_id}-{away_id}", "last": 5}, timeout=10)
+        data = req.json()
         if data.get("results", 0) > 0:
             vitorias_home = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == home_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == home_id))
             vitorias_away = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == away_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == away_id))
             empates = data['results'] - vitorias_home - vitorias_away
-            
             return f"\n📚 <b>HISTÓRICO H2H (Últimos {data['results']}):</b>\n✅ {home_name}: {vitorias_home} Vitórias\n✅ {away_name}: {vitorias_away} Vitórias\n➖ Empates: {empates}\n"
-    except Exception as e: 
-        print(f"⚠️ Erro ao obter histórico de confrontos: {e}")
+    except: pass
     return ""
 
 def verificar_resultados_automatico():
@@ -148,8 +167,10 @@ def verificar_resultados_automatico():
         esportes_pendentes = set([p[1] for p in pendentes])
         
         for esporte in esportes_pendentes:
-            resp = requests.get(f"https://api.the-odds-api.com/v4/sports/{esporte}/scores/", params={"apiKey": API_KEY_ODDS, "daysFrom": 2}, timeout=15)
-            if resp.status_code != 200: continue
+            url_scores = f"https://api.the-odds-api.com/v4/sports/{esporte}/scores/"
+            resp = fazer_requisicao_odds(url_scores, {"daysFrom": 2})
+            if not resp or resp.status_code != 200: continue
+            
             scores_data = resp.json()
 
             for aposta in pendentes:
@@ -195,30 +216,34 @@ def verificar_resultados_automatico():
                 else: enviar_telegram(f"❌ <b>RED</b>\n⚽ {jogo_nome} ({home_score}x{away_score})\n🎯 {mercado} não bateu.")
                     
         conn.close()
-    except Exception as e: 
-        print(f"⚠️ Erro ao verificar resultados automáticos: {e}")
+    except Exception as e: print(f"⚠️ Erro ao verificar resultados: {e}")
 
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor (+EV > 0.5%) nas próximas 12h...")
-
-    bilhetes_potenciais =[]
-
+    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor (Mínimo EV: 1.0%)...")
+    
     for liga in LIGAS:
         is_nba = "basketball" in liga
-        mercados_alvo = "h2h,totals,spreads,player_points" if is_nba else "h2h,totals,spreads,btts,player_shots_on_target"
+        # EXTREMA ECONOMIA: Custo reduzido de 5 para 2 mercados!
+        mercados_alvo = "h2h,spreads" if is_nba else "h2h,btts"
         
-        parametros = {"apiKey": API_KEY_ODDS, "regions": "eu,uk,us", "markets": mercados_alvo, "bookmakers": "bet365,pinnacle"}
-
-        try:
-            resposta = requests.get(f"https://api.the-odds-api.com/v4/sports/{liga}/odds/", params=parametros, timeout=15)
-            if resposta.status_code != 200: continue
+        # EXTREMA ECONOMIA: Apenas região 'eu' (Bet365 e Pinnacle operam nela). Reduz custo em 3x.
+        parametros = {"regions": "eu", "markets": mercados_alvo, "bookmakers": "bet365,pinnacle"}
+        url_odds = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/"
+        
+        resposta = fazer_requisicao_odds(url_odds, parametros)
+        
+        if not resposta or resposta.status_code != 200: 
+            if resposta and resposta.status_code == 429:
+                print("🚨 TODAS AS CHAVES ESGOTADAS! Pausando varredura.")
+                return 
+            continue
             
+        try:
             for evento in resposta.json():
                 horario_br = datetime.fromisoformat(evento["commence_time"].replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo"))
                 minutos_faltando = (horario_br - agora_br).total_seconds() / 60
                 
-                # Janela de 15 minutos a 12 horas
                 if not (15 <= minutos_faltando <= 720): continue
 
                 bookmakers = evento.get("bookmakers",[])
@@ -228,13 +253,10 @@ def processar_jogos_e_enviar():
                 home_team, away_team = evento["home_team"], evento["away_team"]
                 jogo_str = f"{home_team} x {away_team}"
 
-                if not pinnacle or not bet365:
-                    print(f"   [⏳ IGNORADO] {jogo_str} -> Falta odd da Pinnacle ou Bet365 para comparar.")
-                    continue
+                if not pinnacle or not bet365: continue
 
                 oportunidades =[]
-                maior_ev_visto = -100.0 # Guarda o melhor EV do jogo para te mostrar na tela
-
+                
                 # 1. AMBAS MARCAM (BTTS)
                 pin_btts = next((m for m in pinnacle.get("markets", []) if m["key"] == "btts"), None)
                 b365_btts = next((m for m in bet365.get("markets",[]) if m["key"] == "btts"), None)
@@ -247,9 +269,8 @@ def processar_jogos_e_enviar():
                         prob_y, prob_n = (1/p_y) / margin, (1/p_n) / margin
                         ev_y, ev_n = (prob_y * b_y) - 1 if b_y else -1, (prob_n * b_n) - 1 if b_n else -1
                         
-                        maior_ev_visto = max(maior_ev_visto, ev_y, ev_n)
-                        if ev_y >= 0.005: oportunidades.append(("Ambas Marcam", "Sim", b_y, prob_y, ev_y))
-                        if ev_n >= 0.005: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
+                        if ev_y >= 0.01: oportunidades.append(("Ambas Marcam", "Sim", b_y, prob_y, ev_y))
+                        if ev_n >= 0.01: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
 
                 # 2. H2H E EMPATE ANULA (DNB)
                 pin_h2h = next((m for m in pinnacle.get("markets",[]) if m["key"] == "h2h"), None)
@@ -267,34 +288,28 @@ def processar_jogos_e_enviar():
                         prob_h, prob_a = (1/pin_h) / margin, (1/pin_a) / margin
                         ev_h, ev_a = (prob_h * b365_h) - 1 if b365_h else -1, (prob_a * b365_a) - 1 if b365_a else -1
 
-                        maior_ev_visto = max(maior_ev_visto, ev_h, ev_a)
-                        if ev_h >= 0.005: oportunidades.append(("Vitória Casa", home_team, b365_h, prob_h, ev_h))
-                        if ev_a >= 0.005: oportunidades.append(("Vitória Visitante", away_team, b365_a, prob_a, ev_a))
+                        if ev_h >= 0.01: oportunidades.append(("Vitória Casa", home_team, b365_h, prob_h, ev_h))
+                        if ev_a >= 0.01: oportunidades.append(("Vitória Visitante", away_team, b365_a, prob_a, ev_a))
 
                         if not is_nba and b365_d > 1:
                             dnb_h, dnb_a = (b365_h * (b365_d - 1)) / b365_d, (b365_a * (b365_d - 1)) / b365_d
                             prob_dnb_h = prob_h / (prob_h + prob_a) if (prob_h + prob_a) > 0 else 0
                             ev_dnb_h = (prob_dnb_h * dnb_h) - 1
-                            maior_ev_visto = max(maior_ev_visto, ev_dnb_h)
-                            if ev_dnb_h >= 0.005: oportunidades.append(("Empate Anula", f"Casa ({home_team})", dnb_h, prob_dnb_h, ev_dnb_h))
+                            if ev_dnb_h >= 0.01: oportunidades.append(("Empate Anula", f"Casa ({home_team})", dnb_h, prob_dnb_h, ev_dnb_h))
 
-                # FEEDBACK PSICOLÓGICO NA TELA PRETA: Mostra que ele analisou a partida!
-                if not oportunidades: 
-                    print(f"[🔎 ODD JUSTA] {jogo_str} -> Analisado. Melhor EV achado foi: {maior_ev_visto*100:.2f}% (Abaixo da meta de 0.5%)")
-                    continue
+                if not oportunidades: continue
                 
                 melhor_op = max(oportunidades, key=lambda x: x[4]) 
                 mercado_nome, selecao_nome, odd_b365, prob_justa, ev_real = melhor_op
 
-                # SISTEMA DE NÍVEIS DE STAKE (TIERS)
-                if ev_real >= 0.02:
-                    cabecalho = "💎 <b>APOSTA INSTITUCIONAL (ELITE)</b> 💎"
+                if ev_real >= 0.02: 
+                    cabecalho = "💎 <b>APOSTA INSTITUCIONAL (SNIPER)</b> 💎"
                     b_kelly = odd_b365 - 1
                     q_kelly = 1 - prob_justa
-                    kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0)) # Stake normal (EV > 2%)
-                else:
-                    cabecalho = "🔥 <b>OPORTUNIDADE DE VALOR</b> 🔥"
-                    kelly_pct = 0.5 # Stake reduzida para EV menor (0.5% a 1.99%)
+                    kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0)) 
+                elif ev_real >= 0.01: 
+                    cabecalho = "🔥 <b>OPORTUNIDADE DE VALOR (MODERADA)</b> 🔥"
+                    kelly_pct = 0.5 
 
                 jogo_id = f"{evento['id']}_{mercado_nome}"
                 horas_f, min_f = int(minutos_faltando // 60), int(minutos_faltando % 60)
@@ -325,16 +340,20 @@ def processar_jogos_e_enviar():
                         "odd": round(odd_b365, 2), "prob": prob_justa, "ev": ev_real, "stake_perc": round(kelly_pct, 2),
                         "date": horario_br.strftime('%d/%m/%Y')
                     })
-                    print(f"🚀 ✅ TIP ENVIADA PRO TELEGRAM: {jogo_str} | Mercado: {mercado_nome} | EV: +{ev_real*100:.2f}%")
+                    print(f"🚀 ✅ TIP ENVIADA: {jogo_str} | Mercado: {mercado_nome} | EV: +{ev_real*100:.2f}%")
 
         except Exception as e: 
-            print(f"⚠️ Erro ao processar liga {liga}: {e}")
+            print(f"⚠️ Erro de loop na liga: {e}")
 
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Institucional Iniciado!")
-    print("✅ Módulos: Ligas Expandidas | Log Raio-X na Tela | Threshold reduzido (0.5%)")
+    print("🤖 Bot Institucional Iniciado com Sucesso!")
+    print("✅ Módulos: Rotação de 3 Chaves | Modo Economia de Cota | EV Sniper >=2% e EV Moderado >=1%")
     while True:
         processar_jogos_e_enviar()
         verificar_resultados_automatico()
-        time.sleep(600)
+        
+        # EXTREMA ECONOMIA: O bot vai aguardar 8 HORAS entre cada varredura.
+        # Ele faz 3 análises precisas por dia, permitindo que as chaves durem muito mais.
+        print("\n⏳ Aguardando 8 horas (Modo Economia) para a próxima análise global...")
+        time.sleep(28800)
