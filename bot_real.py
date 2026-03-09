@@ -10,8 +10,8 @@ try:
     from services.result_checker import check_results
     from services.stats_analyzer import check_advanced_stats
     from services.auto_learning import is_league_profitable
-except Exception:
-    pass
+except Exception as e:
+    print(f"⚠️ Aviso de importação (módulos extras não encontrados): {e}")
 
 # ==========================================
 # CONFIGURAÇÕES REAIS E INTEGRAÇÃO DB
@@ -80,7 +80,8 @@ def salvar_aposta_sistema(bet_data):
         ))
         conn.commit()
         conn.close()
-    except: pass
+    except Exception as e: 
+        print(f"⚠️ Erro ao salvar aposta no Banco de Dados: {e}")
 
     try:
         if os.path.exists(HISTORY_FILE):
@@ -88,13 +89,16 @@ def salvar_aposta_sistema(bet_data):
         else: bets =[]
         bets.append(bet_data)
         with open(HISTORY_FILE, "w", encoding="utf-8") as f: json.dump(bets, f, indent=2)
-    except: pass
+    except Exception as e: 
+        print(f"⚠️ Erro ao salvar histórico JSON: {e}")
 
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try: requests.post(url, json=payload, timeout=10)
-    except: pass
+    try: 
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e: 
+        print(f"⚠️ Erro ao enviar mensagem para o Telegram: {e}")
 
 def buscar_id_time(nome_time):
     url = "https://v3.football.api-sports.io/teams"
@@ -102,7 +106,8 @@ def buscar_id_time(nome_time):
     try:
         data = requests.get(url, headers=headers, params={"search": nome_time}, timeout=10).json()
         if data.get("results", 0) > 0: return data["response"][0]["team"]["id"]
-    except: pass
+    except Exception as e: 
+        print(f"⚠️ Erro ao buscar ID do time {nome_time}: {e}")
     return None
 
 def obter_historico_times(home_name, away_name):
@@ -120,7 +125,8 @@ def obter_historico_times(home_name, away_name):
             empates = data['results'] - vitorias_home - vitorias_away
             
             return f"\n📚 <b>HISTÓRICO H2H (Últimos {data['results']}):</b>\n✅ {home_name}: {vitorias_home} Vitórias\n✅ {away_name}: {vitorias_away} Vitórias\n➖ Empates: {empates}\n"
-    except: pass
+    except Exception as e: 
+        print(f"⚠️ Erro ao obter histórico de confrontos: {e}")
     return ""
 
 def verificar_resultados_automatico():
@@ -189,7 +195,8 @@ def verificar_resultados_automatico():
                 else: enviar_telegram(f"❌ <b>RED</b>\n⚽ {jogo_nome} ({home_score}x{away_score})\n🎯 {mercado} não bateu.")
                     
         conn.close()
-    except: pass
+    except Exception as e: 
+        print(f"⚠️ Erro ao verificar resultados automáticos: {e}")
 
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -295,4 +302,39 @@ def processar_jogos_e_enviar():
 
                 if jogo_id not in jogos_enviados:
                     emoji = "🏀" if is_nba else "⚽"
-                    bloco_historico = f"\n{ob
+                    bloco_historico = f"\n{obter_historico_times(home_team, away_team)}" if not is_nba else ""
+                    
+                    texto_msg = (
+                        f"{cabecalho}\n\n"
+                        f"🏆 <b>Liga:</b> {evento['sport_title']}\n"
+                        f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {tempo_str})\n"
+                        f"{emoji} <b>Jogo:</b> {home_team} x {away_team}\n\n"
+                        f"🎯 <b>MERCADO (+EV):</b>\n"
+                        f"👉 <b>{mercado_nome}: {selecao_nome}</b>\n"
+                        f"📈 <b>Odd Atual:</b> {odd_b365:.2f}\n\n"
+                        f"💰 <b>Gestão Recomendada:</b> {kelly_pct:.1f}% da Banca\n"
+                        f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.2f}%\n"
+                        f"{bloco_historico}"
+                    )
+                    enviar_telegram(texto_msg)
+                    jogos_enviados.add(jogo_id)
+
+                    salvar_aposta_sistema({
+                        "id": evento["id"], "sport_key": liga, "home": home_team, "away": away_team,
+                        "league": evento['sport_title'], "market_chosen": mercado_nome, "selecao": selecao_nome,
+                        "odd": round(odd_b365, 2), "prob": prob_justa, "ev": ev_real, "stake_perc": round(kelly_pct, 2),
+                        "date": horario_br.strftime('%d/%m/%Y')
+                    })
+                    print(f"🚀 ✅ TIP ENVIADA PRO TELEGRAM: {jogo_str} | Mercado: {mercado_nome} | EV: +{ev_real*100:.2f}%")
+
+        except Exception as e: 
+            print(f"⚠️ Erro ao processar liga {liga}: {e}")
+
+if __name__ == "__main__":
+    inicializar_banco()
+    print("🤖 Bot Institucional Iniciado!")
+    print("✅ Módulos: Ligas Expandidas | Log Raio-X na Tela | Threshold reduzido (0.5%)")
+    while True:
+        processar_jogos_e_enviar()
+        verificar_resultados_automatico()
+        time.sleep(600)
