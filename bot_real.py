@@ -14,16 +14,26 @@ except Exception as e:
     pass
 
 # ==========================================
-# PLANO B: ROTAÇÃO DE CHAVES DA API
+# 1. RODÍZIO DA "THE ODDS API" (Busca Valor/EV)
+# Total de 5 Chaves = 2.500 requisições/mês
 # ==========================================
-# Suas 3 chaves = 1.500 requisições mensais (Modo Economia ativado para durar 30 dias)
 API_KEYS_ODDS =[
-    "6a1c0078b3ed09b42fbacee8f07e7cc3",  # Chave 1
-    "f05d340d10ad108aae44ed8b674519f7",  # Chave 2
-    "f4ffd9cc04c586e9e1d62266db35bb0a"   # Chave 3
+    "6a1c0078b3ed09b42fbacee8f07e7cc3",  # Chave 1 (Original)
+    "4949c49070dd3eff2113bd1a07293165",  # Chave 2
+    "0ecb237829d0f800181538e1a4fa2494",  # Chave 3
+    "4790419cc795932ffaeb0152fa5818c8",  # Chave 4
+    "5ee1c6a8c611b6c3d6aff8043764555f"   # Chave 5
 ]
 
-API_FOOTBALL_KEY = "1cd3cb39658509019bdb1cdffff22c39" 
+# ==========================================
+# 2. RODÍZIO DA "API-FOOTBALL" (Busca Histórico H2H)
+# ==========================================
+API_KEYS_FOOTBALL =[
+    "1cd3cb39658509019bdb1cdffff22c39",
+    "f05d340d10ad108aae44ed8b674519f7",
+    "f4ffd9cc04c586e9e1d62266db35bb0a"
+]
+
 TELEGRAM_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
 CHAT_ID = "-1003814625223"
 HISTORY_FILE = "bets_history.json"
@@ -45,9 +55,10 @@ LIGAS =[
 jogos_enviados = set()
 ultima_checagem_resultados = 0
 chave_odds_atual = 0 
+chave_football_atual = 0
 
 # ==========================================
-# GERENCIADOR DE REQUISIÇÕES (PLANO B)
+# GERENCIADORES DE REQUISIÇÕES (PLANO B DUPLO)
 # ==========================================
 def fazer_requisicao_odds(url, parametros):
     global chave_odds_atual
@@ -58,18 +69,34 @@ def fazer_requisicao_odds(url, parametros):
             resposta = requests.get(url, params=parametros, timeout=15)
             if resposta.status_code == 200:
                 restantes = resposta.headers.get('x-requests-remaining', '?')
-                print(f"📡[Chave {chave_odds_atual + 1}] OK! (Restam {restantes} reqs mensais)")
+                print(f"📡[Odds API - Chave {chave_odds_atual + 1}] OK! (Restam {restantes} reqs nesta chave)")
                 return resposta
             elif resposta.status_code in[401, 429]:
-                print(f"❌[Chave {chave_odds_atual + 1}] Esgotada ou Inválida! Pulando para a próxima...")
+                print(f"❌[Odds API - Chave {chave_odds_atual + 1}] Esgotada! Pulando para a próxima...")
                 chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
             else:
                 return resposta 
         except Exception as e:
-            print(f"⚠️ Erro de rede: {e}")
             return None
-            
-    print("🚨 TODAS AS 3 CHAVES DE ODDS ESTOURARAM O LIMITE!")
+    print("🚨 ATENÇÃO: TODAS as 5 chaves da The Odds API estouraram!")
+    return None
+
+def fazer_requisicao_football(url, parametros):
+    global chave_football_atual
+    for tentativa in range(len(API_KEYS_FOOTBALL)):
+        chave_teste = API_KEYS_FOOTBALL[chave_football_atual]
+        headers = {"x-apisports-key": chave_teste}
+        try:
+            resposta = requests.get(url, headers=headers, params=parametros, timeout=10)
+            data = resposta.json()
+            if resposta.status_code == 403 or ("errors" in data and data["errors"]):
+                print(f"❌[Football API - Chave {chave_football_atual + 1}] Esgotada! Pulando para a próxima...")
+                chave_football_atual = (chave_football_atual + 1) % len(API_KEYS_FOOTBALL)
+            else:
+                return data
+        except Exception as e:
+            return None
+    print("🚨 ATENÇÃO: Todas as chaves da API-Football estouraram (100 reqs/dia)!")
     return None
 
 def inicializar_banco():
@@ -122,13 +149,9 @@ def enviar_telegram(texto):
 
 def buscar_id_time(nome_time):
     url = "https://v3.football.api-sports.io/teams"
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    try:
-        req = requests.get(url, headers=headers, params={"search": nome_time}, timeout=10)
-        data = req.json()
-        if req.status_code == 403 or "errors" in data and data["errors"]: return None
-        if data.get("results", 0) > 0: return data["response"][0]["team"]["id"]
-    except: pass
+    data = fazer_requisicao_football(url, {"search": nome_time})
+    if data and data.get("results", 0) > 0:
+        return data["response"][0]["team"]["id"]
     return None
 
 def obter_historico_times(home_name, away_name):
@@ -136,16 +159,14 @@ def obter_historico_times(home_name, away_name):
     away_id = buscar_id_time(away_name)
     if not home_id or not away_id: return ""
 
-    try:
-        url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
-        req = requests.get(url_h2h, headers={"x-apisports-key": API_FOOTBALL_KEY}, params={"h2h": f"{home_id}-{away_id}", "last": 5}, timeout=10)
-        data = req.json()
-        if data.get("results", 0) > 0:
-            vitorias_home = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == home_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == home_id))
-            vitorias_away = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == away_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == away_id))
-            empates = data['results'] - vitorias_home - vitorias_away
-            return f"\n📚 <b>HISTÓRICO H2H (Últimos {data['results']}):</b>\n✅ {home_name}: {vitorias_home} Vitórias\n✅ {away_name}: {vitorias_away} Vitórias\n➖ Empates: {empates}\n"
-    except: pass
+    url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
+    data = fazer_requisicao_football(url_h2h, {"h2h": f"{home_id}-{away_id}", "last": 5})
+    
+    if data and data.get("results", 0) > 0:
+        vitorias_home = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == home_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == home_id))
+        vitorias_away = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == away_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == away_id))
+        empates = data['results'] - vitorias_home - vitorias_away
+        return f"\n📚 <b>HISTÓRICO H2H (Últimos {data['results']}):</b>\n✅ {home_name}: {vitorias_home} Vitórias\n✅ {away_name}: {vitorias_away} Vitórias\n➖ Empates: {empates}\n"
     return ""
 
 def verificar_resultados_automatico():
@@ -224,10 +245,9 @@ def processar_jogos_e_enviar():
     
     for liga in LIGAS:
         is_nba = "basketball" in liga
-        # EXTREMA ECONOMIA: Custo reduzido de 5 para 2 mercados!
         mercados_alvo = "h2h,spreads" if is_nba else "h2h,btts"
         
-        # EXTREMA ECONOMIA: Apenas região 'eu' (Bet365 e Pinnacle operam nela). Reduz custo em 3x.
+        # Filtro de economia extrema: Apenas europa (pega Pinnacle/Bet365)
         parametros = {"regions": "eu", "markets": mercados_alvo, "bookmakers": "bet365,pinnacle"}
         url_odds = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/"
         
@@ -235,7 +255,6 @@ def processar_jogos_e_enviar():
         
         if not resposta or resposta.status_code != 200: 
             if resposta and resposta.status_code == 429:
-                print("🚨 TODAS AS CHAVES ESGOTADAS! Pausando varredura.")
                 return 
             continue
             
@@ -244,6 +263,7 @@ def processar_jogos_e_enviar():
                 horario_br = datetime.fromisoformat(evento["commence_time"].replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo"))
                 minutos_faltando = (horario_br - agora_br).total_seconds() / 60
                 
+                # Foca em jogos das próximas 12h
                 if not (15 <= minutos_faltando <= 720): continue
 
                 bookmakers = evento.get("bookmakers",[])
@@ -348,12 +368,14 @@ def processar_jogos_e_enviar():
 if __name__ == "__main__":
     inicializar_banco()
     print("🤖 Bot Institucional Iniciado com Sucesso!")
-    print("✅ Módulos: Rotação de 3 Chaves | Modo Economia de Cota | EV Sniper >=2% e EV Moderado >=1%")
+    print("✅ Rodízio Total (5 Chaves Odds / 3 Chaves Football) | Cálculo p/ durar 30 Dias!")
     while True:
         processar_jogos_e_enviar()
         verificar_resultados_automatico()
         
-        # EXTREMA ECONOMIA: O bot vai aguardar 8 HORAS entre cada varredura.
-        # Ele faz 3 análises precisas por dia, permitindo que as chaves durem muito mais.
-        print("\n⏳ Aguardando 8 horas (Modo Economia) para a próxima análise global...")
-        time.sleep(28800)
+        # ⚠️ MATEMÁTICA DO MÊS INTEIRO ⚠️
+        # 43200 segundos = 12 horas. 
+        # Ele vai rodar só 2 vezes ao dia (Pegando os jogos de Manhã e de Noite). 
+        # Com isso, suas 5 chaves não estouram antes do mês virar!
+        print("\n⏳ Aguardando 12 horas (Modo Matemática Inteligente) para a próxima varredura global...")
+        time.sleep(43200)
