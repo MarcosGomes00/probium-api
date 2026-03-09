@@ -23,6 +23,7 @@ CHAT_ID = "-1003814625223"
 HISTORY_FILE = "bets_history.json"
 DB_FILE = "probum.db"
 
+# 🏆 LIGAS COMPLETAS (Incluindo FA Cup, Turquia, etc)
 LIGAS =[
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",              
     "soccer_germany_bundesliga", "soccer_france_ligue_one", "soccer_portugal_primeira_liga",
@@ -31,6 +32,8 @@ LIGAS =[
     "soccer_conmebol_copa_libertadores", "soccer_conmebol_copa_sudamericana",
     "soccer_argentina_primera_division", "soccer_mexico_ligamx", "soccer_usa_mls",
     "soccer_turkey_super_league", "soccer_belgium_first_div", "soccer_england_championship",
+    "soccer_england_fa_cup", # West Ham x Brentford
+    "soccer_uruguay_primera_division", # Ligas do Uruguai
     "basketball_nba", "basketball_euroleague", "basketball_ncaab"                     
 ]
 
@@ -120,37 +123,6 @@ def obter_historico_times(home_name, away_name):
     except: pass
     return ""
 
-def buscar_valor_linhas_asiaticas(pinnacle, bet365, nome_mercado, jogo_str):
-    oportunidades =[]
-    pin_market = next((m for m in pinnacle.get("markets",[]) if m["key"] == nome_mercado), None)
-    b365_market = next((m for m in bet365.get("markets", []) if m["key"] == nome_mercado), None)
-
-    if not pin_market or not b365_market: return oportunidades
-
-    grupos_pin = {}
-    for out in pin_market["outcomes"]:
-        desc, pt = out.get("description", "Jogo"), out.get("point", "")
-        if not pt: continue
-        chave = f"{desc}_{pt}"
-        if chave not in grupos_pin: grupos_pin[chave] =[]
-        grupos_pin[chave].append(out)
-
-    for chave, outs in grupos_pin.items():
-        if len(outs) == 2:
-            margin = (1/outs[0]["price"]) + (1/outs[1]["price"])
-            for p_out in outs:
-                prob = (1/p_out["price"]) / margin
-                for b_out in b365_market["outcomes"]:
-                    if b_out["name"] == p_out["name"] and b_out.get("point") == p_out.get("point") and b_out.get("description", "Jogo") == p_out.get("description", "Jogo"):
-                        ev = (prob * b_out["price"]) - 1
-                        
-                        # AGORA ACEITA A PARTIR DE 1% PARA GARANTIR VOLUME!
-                        if ev >= 0.01: 
-                            mercado_pt = nome_mercado.replace("_", " ").title()
-                            selecao = f"{b_out.get('description', 'Jogo')} - {b_out['name']} {b_out['point']}"
-                            oportunidades.append((mercado_pt, selecao, b_out["price"], prob, ev))
-    return oportunidades
-
 def verificar_resultados_automatico():
     global ultima_checagem_resultados
     agora = time.time()
@@ -221,7 +193,7 @@ def verificar_resultados_automatico():
 
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor (+EV >= 1%) - Sistema de Tiers Ativo...")
+    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor (+EV > 0.5%) nas próximas 12h...")
 
     bilhetes_potenciais =[]
 
@@ -246,19 +218,17 @@ def processar_jogos_e_enviar():
                 pinnacle = next((b for b in bookmakers if b["key"] == "pinnacle"), None)
                 bet365 = next((b for b in bookmakers if b["key"] == "bet365"), next((b for b in bookmakers if b["key"] == "draftkings"), None))
                 
-                if not pinnacle or not bet365: continue
-
                 home_team, away_team = evento["home_team"], evento["away_team"]
                 jogo_str = f"{home_team} x {away_team}"
+
+                if not pinnacle or not bet365:
+                    print(f"   [⏳ IGNORADO] {jogo_str} -> Falta odd da Pinnacle ou Bet365 para comparar.")
+                    continue
+
                 oportunidades =[]
+                maior_ev_visto = -100.0 # Guarda o melhor EV do jogo para te mostrar na tela
 
-                # 1. MERCADOS ASIÁTICOS E TOTAIS
-                oportunidades.extend(buscar_valor_linhas_asiaticas(pinnacle, bet365, "spreads", jogo_str))
-                oportunidades.extend(buscar_valor_linhas_asiaticas(pinnacle, bet365, "totals", jogo_str))
-                if is_nba: oportunidades.extend(buscar_valor_linhas_asiaticas(pinnacle, bet365, "player_points", jogo_str))
-                else: oportunidades.extend(buscar_valor_linhas_asiaticas(pinnacle, bet365, "player_shots_on_target", jogo_str))
-
-                # 2. AMBAS MARCAM (BTTS)
+                # 1. AMBAS MARCAM (BTTS)
                 pin_btts = next((m for m in pinnacle.get("markets", []) if m["key"] == "btts"), None)
                 b365_btts = next((m for m in bet365.get("markets",[]) if m["key"] == "btts"), None)
                 if pin_btts and b365_btts and len(pin_btts["outcomes"]) == 2:
@@ -270,10 +240,11 @@ def processar_jogos_e_enviar():
                         prob_y, prob_n = (1/p_y) / margin, (1/p_n) / margin
                         ev_y, ev_n = (prob_y * b_y) - 1 if b_y else -1, (prob_n * b_n) - 1 if b_n else -1
                         
-                        if ev_y >= 0.01: oportunidades.append(("Ambas Marcam", "Sim", b_y, prob_y, ev_y))
-                        if ev_n >= 0.01: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
+                        maior_ev_visto = max(maior_ev_visto, ev_y, ev_n)
+                        if ev_y >= 0.005: oportunidades.append(("Ambas Marcam", "Sim", b_y, prob_y, ev_y))
+                        if ev_n >= 0.005: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
 
-                # 3. H2H E EMPATE ANULA (DNB)
+                # 2. H2H E EMPATE ANULA (DNB)
                 pin_h2h = next((m for m in pinnacle.get("markets",[]) if m["key"] == "h2h"), None)
                 b365_h2h = next((m for m in bet365.get("markets",[]) if m["key"] == "h2h"), None)
                 if pin_h2h and b365_h2h and len(pin_h2h["outcomes"]) >= 2:
@@ -289,76 +260,39 @@ def processar_jogos_e_enviar():
                         prob_h, prob_a = (1/pin_h) / margin, (1/pin_a) / margin
                         ev_h, ev_a = (prob_h * b365_h) - 1 if b365_h else -1, (prob_a * b365_a) - 1 if b365_a else -1
 
-                        if ev_h >= 0.01: oportunidades.append(("Vitória Casa", home_team, b365_h, prob_h, ev_h))
-                        if ev_a >= 0.01: oportunidades.append(("Vitória Visitante", away_team, b365_a, prob_a, ev_a))
+                        maior_ev_visto = max(maior_ev_visto, ev_h, ev_a)
+                        if ev_h >= 0.005: oportunidades.append(("Vitória Casa", home_team, b365_h, prob_h, ev_h))
+                        if ev_a >= 0.005: oportunidades.append(("Vitória Visitante", away_team, b365_a, prob_a, ev_a))
 
                         if not is_nba and b365_d > 1:
                             dnb_h, dnb_a = (b365_h * (b365_d - 1)) / b365_d, (b365_a * (b365_d - 1)) / b365_d
                             prob_dnb_h = prob_h / (prob_h + prob_a) if (prob_h + prob_a) > 0 else 0
                             ev_dnb_h = (prob_dnb_h * dnb_h) - 1
-                            if ev_dnb_h >= 0.01: oportunidades.append(("Empate Anula", f"Casa ({home_team})", dnb_h, prob_dnb_h, ev_dnb_h))
+                            maior_ev_visto = max(maior_ev_visto, ev_dnb_h)
+                            if ev_dnb_h >= 0.005: oportunidades.append(("Empate Anula", f"Casa ({home_team})", dnb_h, prob_dnb_h, ev_dnb_h))
 
-                if not oportunidades: continue
+                # FEEDBACK PSICOLÓGICO NA TELA PRETA: Mostra que ele analisou a partida!
+                if not oportunidades: 
+                    print(f"[🔎 ODD JUSTA] {jogo_str} -> Analisado. Melhor EV achado foi: {maior_ev_visto*100:.2f}% (Abaixo da meta de 0.5%)")
+                    continue
+                
                 melhor_op = max(oportunidades, key=lambda x: x[4]) 
                 mercado_nome, selecao_nome, odd_b365, prob_justa, ev_real = melhor_op
 
-                # ===============================================
-                # SISTEMA DE NÍVEIS (TIERS) - O SEGREDO DO SUCESSO
-                # ===============================================
+                # SISTEMA DE NÍVEIS DE STAKE (TIERS)
                 if ev_real >= 0.02:
                     cabecalho = "💎 <b>APOSTA INSTITUCIONAL (ELITE)</b> 💎"
                     b_kelly = odd_b365 - 1
                     q_kelly = 1 - prob_justa
-                    kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0)) # Stake normal
+                    kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0)) # Stake normal (EV > 2%)
                 else:
                     cabecalho = "🔥 <b>OPORTUNIDADE DE VALOR</b> 🔥"
-                    kelly_pct = 0.5 # Stake reduzida para proteger a banca em EV menor
+                    kelly_pct = 0.5 # Stake reduzida para EV menor (0.5% a 1.99%)
 
                 jogo_id = f"{evento['id']}_{mercado_nome}"
                 horas_f, min_f = int(minutos_faltando // 60), int(minutos_faltando % 60)
                 tempo_str = f"{horas_f}h {min_f}min" if horas_f > 0 else f"{min_f} min"
 
-                if 1.30 <= odd_b365 <= 1.60:
-                    bilhetes_potenciais.append({
-                        "id": jogo_id, "home": home_team, "away": away_team, "liga": evento['sport_title'],
-                        "horario": horario_br.strftime('%H:%M'), "mercado": mercado_nome, "selecao": selecao_nome,
-                        "odd": odd_b365, "ev": ev_real
-                    })
-
                 if jogo_id not in jogos_enviados:
                     emoji = "🏀" if is_nba else "⚽"
-                    bloco_historico = f"\n{obter_historico_times(home_team, away_team)}" if not is_nba else ""
-                    
-                    texto_msg = (
-                        f"{cabecalho}\n\n"
-                        f"🏆 <b>Liga:</b> {evento['sport_title']}\n"
-                        f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {tempo_str})\n"
-                        f"{emoji} <b>Jogo:</b> {home_team} x {away_team}\n\n"
-                        f"🎯 <b>MERCADO (+EV):</b>\n"
-                        f"👉 <b>{mercado_nome}: {selecao_nome}</b>\n"
-                        f"📈 <b>Odd Atual:</b> {odd_b365:.2f}\n\n"
-                        f"💰 <b>Gestão Recomendada:</b> {kelly_pct:.1f}% da Banca\n"
-                        f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.2f}%\n"
-                        f"{bloco_historico}"
-                    )
-                    enviar_telegram(texto_msg)
-                    jogos_enviados.add(jogo_id)
-
-                    salvar_aposta_sistema({
-                        "id": evento["id"], "sport_key": liga, "home": home_team, "away": away_team,
-                        "league": evento['sport_title'], "market_chosen": mercado_nome, "selecao": selecao_nome,
-                        "odd": round(odd_b365, 2), "prob": prob_justa, "ev": ev_real, "stake_perc": round(kelly_pct, 2),
-                        "date": horario_br.strftime('%d/%m/%Y')
-                    })
-                    print(f"🚀 Tip enviada: {mercado_nome} - {selecao_nome} | EV: +{ev_real*100:.2f}%")
-
-        except Exception: pass
-
-if __name__ == "__main__":
-    inicializar_banco()
-    print("🤖 Bot Institucional Iniciado!")
-    print("✅ Sistema Híbrido: Volume (EV > 1%) + Qualidade (Gestão de Stake)")
-    while True:
-        processar_jogos_e_enviar()
-        verificar_resultados_automatico()
-        time.sleep(600)
+                    bloco_historico = f"\n{ob
