@@ -69,7 +69,7 @@ def fazer_requisicao_odds(url, parametros):
                 restantes = resposta.headers.get('x-requests-remaining', '?')
                 print(f"📡[Odds API - Chave {chave_odds_atual + 1}] OK! (Restam {restantes} reqs)")
                 return resposta
-            elif resposta.status_code in [401, 429]:
+            elif resposta.status_code in[401, 429]:
                 print(f"❌[Odds API - Chave {chave_odds_atual + 1}] Esgotada! Pulando para a próxima...")
                 chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
             else:
@@ -172,7 +172,9 @@ def processar_jogos_e_enviar():
     for liga in LIGAS:
         time.sleep(1) # Previne erro 429 da API
         is_nba = "basketball" in liga
-        mercados_alvo = "h2h,spreads,totals" if is_nba else "h2h,btts,totals"
+        
+        # ATUALIZADO: Agora busca Empate Anula e Dupla Aposta
+        mercados_alvo = "h2h,spreads,totals" if is_nba else "h2h,btts,totals,draw_no_bet,double_chance"
         
         casas_busca = f"{SHARP_BOOKIE}," + ",".join(SOFT_BOOKIES)
         parametros = {"regions": "eu,us", "markets": mercados_alvo, "bookmakers": casas_busca}
@@ -216,7 +218,7 @@ def processar_jogos_e_enviar():
                                     oportunidades.append(("Vencedor (Moneyline)", selecao, odd_oferecida, prob_real, ev_real, nome_casa))
 
                     # 2. MERCADO: AMBAS MARCAM (BTTS)
-                    pin_btts = next((m for m in pinnacle.get("markets", []) if m["key"] == "btts"), None)
+                    pin_btts = next((m for m in pinnacle.get("markets",[]) if m["key"] == "btts"), None)
                     soft_btts = next((m for m in soft_b.get("markets",[]) if m["key"] == "btts"), None)
                     if pin_btts and soft_btts:
                         probs_justas = calcular_prob_justa(pin_btts["outcomes"])
@@ -231,22 +233,64 @@ def processar_jogos_e_enviar():
                                     selecao_br = "Sim" if selecao == "Yes" else "Não"
                                     oportunidades.append(("Ambas Marcam", selecao_br, odd_oferecida, prob_real, ev_real, nome_casa))
 
-                    # 3. MERCADO: OVER/UNDER (TOTALS)
+                    # 3. MERCADO: OVER/UNDER (TOTALS) - CORRIGIDO O CÁLCULO DE LINHAS
                     pin_tot = next((m for m in pinnacle.get("markets", []) if m["key"] == "totals"), None)
                     soft_tot = next((m for m in soft_b.get("markets",[]) if m["key"] == "totals"), None)
                     if pin_tot and soft_tot:
-                        probs_justas = calcular_prob_justa(pin_tot["outcomes"])
                         for s_outcome in soft_tot["outcomes"]:
                             selecao = f"{s_outcome['name']} {s_outcome.get('point', '')}"
                             odd_oferecida = s_outcome["price"]
-                            # Acha a probabilidade correspondente na Pinnacle usando o nome e os pontos
-                            pin_match = next((p for p in pin_tot["outcomes"] if p["name"] == s_outcome["name"] and p.get("point") == s_outcome.get("point")), None)
+                            ponto_atual = s_outcome.get("point")
+                            
+                            # Acha a odd correspondente na Pinnacle usando o nome (Over/Under) e a linha (point)
+                            pin_match = next((p for p in pin_tot["outcomes"] if p["name"] == s_outcome["name"] and p.get("point") == ponto_atual), None)
                             
                             if pin_match:
-                                prob_real = probs_justas.get(pin_match["name"], 0) # Simplificação
+                                # Pega o Over e o Under específicos daquela linha exata na Pinnacle para remover o Juice corretamente
+                                par_pinnacle = [p for p in pin_tot["outcomes"] if p.get("point") == ponto_atual]
+                                
+                                try:
+                                    # Calcula a margem justa apenas para esta linha de pontos (ex: apenas pro 2.5)
+                                    margem_linha = sum(1 / item["price"] for item in par_pinnacle if item["price"] > 0)
+                                    prob_real = (1 / pin_match["price"]) / margem_linha
+                                    
+                                    ev_real = (prob_real * odd_oferecida) - 1
+                                    if ev_real >= 0.015:
+                                        oportunidades.append(("Gols/Pontos (Totals)", selecao, odd_oferecida, prob_real, ev_real, nome_casa))
+                                except ZeroDivisionError:
+                                    continue
+
+                    # 4. MERCADO: EMPATE ANULA APOSTA (DRAW NO BET) - NOVO
+                    pin_dnb = next((m for m in pinnacle.get("markets",[]) if m["key"] == "draw_no_bet"), None)
+                    soft_dnb = next((m for m in soft_b.get("markets",[]) if m["key"] == "draw_no_bet"), None)
+                    if pin_dnb and soft_dnb:
+                        probs_justas = calcular_prob_justa(pin_dnb["outcomes"])
+                        for s_outcome in soft_dnb["outcomes"]:
+                            selecao = s_outcome["name"]
+                            odd_oferecida = s_outcome["price"]
+                            prob_real = probs_justas.get(selecao, 0)
+                            
+                            if prob_real > 0 and odd_oferecida > 1:
                                 ev_real = (prob_real * odd_oferecida) - 1
                                 if ev_real >= 0.015:
-                                    oportunidades.append(("Gols/Pontos (Totals)", selecao, odd_oferecida, prob_real, ev_real, nome_casa))
+                                    oportunidades.append(("Empate Anula (DNB)", selecao, odd_oferecida, prob_real, ev_real, nome_casa))
+
+                    # 5. MERCADO: DUPLA APOSTA (DOUBLE CHANCE) - NOVO
+                    pin_dc = next((m for m in pinnacle.get("markets", []) if m["key"] == "double_chance"), None)
+                    soft_dc = next((m for m in soft_b.get("markets",[]) if m["key"] == "double_chance"), None)
+                    if pin_dc and soft_dc:
+                        probs_justas = calcular_prob_justa(pin_dc["outcomes"])
+                        for s_outcome in soft_dc["outcomes"]:
+                            selecao = s_outcome["name"]
+                            odd_oferecida = s_outcome["price"]
+                            prob_real = probs_justas.get(selecao, 0)
+                            
+                            if prob_real > 0 and odd_oferecida > 1:
+                                ev_real = (prob_real * odd_oferecida) - 1
+                                if ev_real >= 0.015:
+                                    # Formata os nomes que a API manda (Ex: "Home/Draw" -> "Casa ou Empate")
+                                    selecao_formatada = selecao.replace("/", " ou ")
+                                    oportunidades.append(("Dupla Aposta (Chance Dupla)", selecao_formatada, odd_oferecida, prob_real, ev_real, nome_casa))
 
                 if not oportunidades: continue
                 
@@ -310,9 +354,5 @@ if __name__ == "__main__":
     
     while True:
         processar_jogos_e_enviar()
-        
-        # Reduzido de 12 para 6 HORAS. Pega jogos da manhã, tarde, noite e madrugada.
-        # Com 5 chaves (2.500 reqs/mês), e 25 ligas, rodar a cada 6 horas (4x ao dia) consumirá aprox. 100 requisições/dia (3.000 mês).
-        # Como as chaves são limpas todo início de mês e algumas ligas falham rápido por falta de jogos, as 5 chaves durarão os 30 dias.
         print("\n⏳ Aguardando 6 horas para a próxima varredura global...")
         time.sleep(21600)
