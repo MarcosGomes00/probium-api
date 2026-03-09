@@ -144,12 +144,8 @@ def buscar_valor_linhas_asiaticas(pinnacle, bet365, nome_mercado, jogo_str):
                     if b_out["name"] == p_out["name"] and b_out.get("point") == p_out.get("point") and b_out.get("description", "Jogo") == p_out.get("description", "Jogo"):
                         ev = (prob * b_out["price"]) - 1
                         
-                        # RADAR: Avisa na tela se achou algo bom, mas exige 2% para mandar pro Telegram!
-                        if 0.01 <= ev < 0.02: 
-                            print(f"   [👀 RADAR] {jogo_str} | {nome_mercado} | +EV: {ev*100:.2f}% (Falta pouco pra bater a meta de 2%)")
-                            
-                        # RETORNAMOS PARA A EXIGÊNCIA MÁXIMA INSTITUCIONAL DE 2%
-                        if ev >= 0.02: 
+                        # AGORA ACEITA A PARTIR DE 1% PARA GARANTIR VOLUME!
+                        if ev >= 0.01: 
                             mercado_pt = nome_mercado.replace("_", " ").title()
                             selecao = f"{b_out.get('description', 'Jogo')} - {b_out['name']} {b_out['point']}"
                             oportunidades.append((mercado_pt, selecao, b_out["price"], prob, ev))
@@ -225,7 +221,7 @@ def verificar_resultados_automatico():
 
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor (+EV >= 2%) nas próximas 12 horas...")
+    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor (+EV >= 1%) - Sistema de Tiers Ativo...")
 
     bilhetes_potenciais =[]
 
@@ -243,7 +239,7 @@ def processar_jogos_e_enviar():
                 horario_br = datetime.fromisoformat(evento["commence_time"].replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo"))
                 minutos_faltando = (horario_br - agora_br).total_seconds() / 60
                 
-                # ⏳ A MÁGICA ESTÁ AQUI: Visão de 12 horas (720 minutos), mas exigência de Qualidade Alta!
+                # Janela de 15 minutos a 12 horas
                 if not (15 <= minutos_faltando <= 720): continue
 
                 bookmakers = evento.get("bookmakers",[])
@@ -274,9 +270,8 @@ def processar_jogos_e_enviar():
                         prob_y, prob_n = (1/p_y) / margin, (1/p_n) / margin
                         ev_y, ev_n = (prob_y * b_y) - 1 if b_y else -1, (prob_n * b_n) - 1 if b_n else -1
                         
-                        if 0.01 <= ev_y < 0.02: print(f"   [👀 RADAR] {jogo_str} | BTTS Sim | +EV: {ev_y*100:.2f}%")
-                        if ev_y >= 0.02: oportunidades.append(("Ambas Marcam", "Sim", b_y, prob_y, ev_y))
-                        if ev_n >= 0.02: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
+                        if ev_y >= 0.01: oportunidades.append(("Ambas Marcam", "Sim", b_y, prob_y, ev_y))
+                        if ev_n >= 0.01: oportunidades.append(("Ambas Marcam", "Não", b_n, prob_n, ev_n))
 
                 # 3. H2H E EMPATE ANULA (DNB)
                 pin_h2h = next((m for m in pinnacle.get("markets",[]) if m["key"] == "h2h"), None)
@@ -294,24 +289,30 @@ def processar_jogos_e_enviar():
                         prob_h, prob_a = (1/pin_h) / margin, (1/pin_a) / margin
                         ev_h, ev_a = (prob_h * b365_h) - 1 if b365_h else -1, (prob_a * b365_a) - 1 if b365_a else -1
 
-                        if 0.01 <= ev_h < 0.02: print(f"   [👀 RADAR] {jogo_str} | Vence Casa | +EV: {ev_h*100:.2f}%")
-
-                        if ev_h >= 0.02: oportunidades.append(("Vitória Casa", home_team, b365_h, prob_h, ev_h))
-                        if ev_a >= 0.02: oportunidades.append(("Vitória Visitante", away_team, b365_a, prob_a, ev_a))
+                        if ev_h >= 0.01: oportunidades.append(("Vitória Casa", home_team, b365_h, prob_h, ev_h))
+                        if ev_a >= 0.01: oportunidades.append(("Vitória Visitante", away_team, b365_a, prob_a, ev_a))
 
                         if not is_nba and b365_d > 1:
                             dnb_h, dnb_a = (b365_h * (b365_d - 1)) / b365_d, (b365_a * (b365_d - 1)) / b365_d
                             prob_dnb_h = prob_h / (prob_h + prob_a) if (prob_h + prob_a) > 0 else 0
                             ev_dnb_h = (prob_dnb_h * dnb_h) - 1
-                            if ev_dnb_h >= 0.02: oportunidades.append(("Empate Anula", f"Casa ({home_team})", dnb_h, prob_dnb_h, ev_dnb_h))
+                            if ev_dnb_h >= 0.01: oportunidades.append(("Empate Anula", f"Casa ({home_team})", dnb_h, prob_dnb_h, ev_dnb_h))
 
                 if not oportunidades: continue
                 melhor_op = max(oportunidades, key=lambda x: x[4]) 
                 mercado_nome, selecao_nome, odd_b365, prob_justa, ev_real = melhor_op
 
-                b_kelly = odd_b365 - 1
-                q_kelly = 1 - prob_justa
-                kelly_pct = max(0.5, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0))
+                # ===============================================
+                # SISTEMA DE NÍVEIS (TIERS) - O SEGREDO DO SUCESSO
+                # ===============================================
+                if ev_real >= 0.02:
+                    cabecalho = "💎 <b>APOSTA INSTITUCIONAL (ELITE)</b> 💎"
+                    b_kelly = odd_b365 - 1
+                    q_kelly = 1 - prob_justa
+                    kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0)) # Stake normal
+                else:
+                    cabecalho = "🔥 <b>OPORTUNIDADE DE VALOR</b> 🔥"
+                    kelly_pct = 0.5 # Stake reduzida para proteger a banca em EV menor
 
                 jogo_id = f"{evento['id']}_{mercado_nome}"
                 horas_f, min_f = int(minutos_faltando // 60), int(minutos_faltando % 60)
@@ -329,15 +330,15 @@ def processar_jogos_e_enviar():
                     bloco_historico = f"\n{obter_historico_times(home_team, away_team)}" if not is_nba else ""
                     
                     texto_msg = (
-                        f"💎 <b>APOSTA PREMIUM DETECTADA</b> 💎\n\n"
+                        f"{cabecalho}\n\n"
                         f"🏆 <b>Liga:</b> {evento['sport_title']}\n"
                         f"⏰ <b>Horário:</b> {horario_br.strftime('%H:%M')} (Faltam {tempo_str})\n"
                         f"{emoji} <b>Jogo:</b> {home_team} x {away_team}\n\n"
                         f"🎯 <b>MERCADO (+EV):</b>\n"
                         f"👉 <b>{mercado_nome}: {selecao_nome}</b>\n"
                         f"📈 <b>Odd Atual:</b> {odd_b365:.2f}\n\n"
-                        f"💰 <b>Gestão Inteligente:</b> {kelly_pct:.1f}% da Banca\n"
-                        f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.1f}%\n"
+                        f"💰 <b>Gestão Recomendada:</b> {kelly_pct:.1f}% da Banca\n"
+                        f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.2f}%\n"
                         f"{bloco_historico}"
                     )
                     enviar_telegram(texto_msg)
@@ -353,32 +354,10 @@ def processar_jogos_e_enviar():
 
         except Exception: pass
 
-    if len(bilhetes_potenciais) >= 2:
-        bilhetes_potenciais.sort(key=lambda x: x['ev'], reverse=True)
-        top_2 = bilhetes_potenciais[:2]
-        id_multipla = f"MULT_{top_2[0]['id']}_{top_2[1]['id']}"
-        
-        if id_multipla not in jogos_enviados:
-            odd_total = top_2[0]['odd'] * top_2[1]['odd']
-            msg_multipla = (
-                f"🎫 <b>BILHETE DUPLO DA INTELIGÊNCIA ARTIFICIAL</b> 🎫\n"
-                f"<i>Análise cruzada de alta segurança.</i>\n\n"
-                f"1️⃣ <b>{top_2[0]['home']} x {top_2[0]['away']}</b> ({top_2[0]['horario']})\n"
-                f"🎯 <b>Mercado:</b> {top_2[0]['mercado']} - {top_2[0]['selecao']}\n"
-                f"📈 Odd: {top_2[0]['odd']:.2f}\n\n"
-                f"2️⃣ <b>{top_2[1]['home']} x {top_2[1]['away']}</b> ({top_2[1]['horario']})\n"
-                f"🎯 <b>Mercado:</b> {top_2[1]['mercado']} - {top_2[1]['selecao']}\n"
-                f"📈 Odd: {top_2[1]['odd']:.2f}\n\n"
-                f"🔥 <b>ODD TOTAL: {odd_total:.2f}</b>\n"
-                f"💰 <b>Gestão recomendada:</b> 0.5% da Banca\n"
-            )
-            enviar_telegram(msg_multipla)
-            jogos_enviados.add(id_multipla)
-
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Institucional de Alta Performance Iniciado!")
-    print("✅ Módulos Ativos: EV Restrito (Mínimo 2%) | Radar de 12 Horas | Qualidade Absoluta")
+    print("🤖 Bot Institucional Iniciado!")
+    print("✅ Sistema Híbrido: Volume (EV > 1%) + Qualidade (Gestão de Stake)")
     while True:
         processar_jogos_e_enviar()
         verificar_resultados_automatico()
