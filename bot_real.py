@@ -6,12 +6,6 @@ import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-try:
-    from services.result_checker import check_results
-    from services.stats_analyzer import check_advanced_stats
-    from services.auto_learning import is_league_profitable
-except Exception: pass
-
 # ==========================================
 # 1. CONFIGURAÇÕES E CHAVES
 # ==========================================
@@ -44,9 +38,10 @@ LIGAS =[
     "basketball_nba", "basketball_euroleague"                     
 ]
 
-# VARIÁVEIS GLOBAIS DE MEMÓRIA
+# VARIÁVEIS GLOBAIS DE MEMÓRIA E IA
 jogos_enviados = {}
-historico_pinnacle = {} # Memória do Smart Money Tracker
+historico_pinnacle = {} 
+memoria_ia = {} # <--- ONDE ELE GUARDA O QUE APRENDEU
 chave_odds_atual = 0 
 ultima_varredura_normal = datetime.min.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
 api_lock = asyncio.Lock()
@@ -55,30 +50,8 @@ oportunidades_globais =[]
 surebets_globais =[]
 
 # ==========================================
-# 2. FUNÇÕES DE SUPORTE ASSÍNCRONAS & BANCO DE DADOS
+# 2. FUNÇÕES DE SUPORTE & BANCO DE DADOS
 # ==========================================
-def limpar_memoria_antiga():
-    agora = datetime.now()
-    para_remover =[k for k, v in jogos_enviados.items() if agora > v]
-    for k in para_remover: del jogos_enviados[k]
-    para_remover_hist =[k for k, v in historico_pinnacle.items() if agora > v["expires"]]
-    for k in para_remover_hist: del historico_pinnacle[k]
-
-async def fazer_requisicao_odds(session, url, parametros):
-    global chave_odds_atual
-    for _ in range(len(API_KEYS_ODDS)):
-        async with api_lock: chave_teste = API_KEYS_ODDS[chave_odds_atual]
-        parametros["apiKey"] = chave_teste
-        try:
-            async with session.get(url, params=parametros, timeout=15) as resposta:
-                if resposta.status == 200:
-                    return await resposta.json()
-                elif resposta.status in[401, 429]: 
-                    async with api_lock: chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
-                else: return await resposta.json()
-        except Exception: pass
-    return None
-
 def inicializar_banco():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -93,13 +66,11 @@ def inicializar_banco():
     conn.close()
 
 def salvar_aposta_banco(op, stake):
-    """ NOVIDADE: Registra a aposta no banco para o Bot 2 auditar """
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         id_aposta = f"{op['jogo_id']}_{op['mercado_nome'][:4]}_{op['selecao_nome'][:4]}".replace(" ", "")
         data_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime('%d/%m/%Y')
-        
         cursor.execute("""
             INSERT OR IGNORE INTO operacoes_tipster 
             (id_aposta, esporte, jogo, liga, mercado, selecao, odd, prob, ev, stake, status, lucro, data_hora)
@@ -111,8 +82,7 @@ def salvar_aposta_banco(op, stake):
         ))
         conn.commit()
         conn.close()
-    except Exception as e:
-        print(f"Erro ao salvar no BD: {e}")
+    except Exception as e: print(f"Erro BD: {e}")
 
 async def enviar_telegram_async(session, texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -120,28 +90,96 @@ async def enviar_telegram_async(session, texto):
     try: await session.post(url, json=payload, timeout=10)
     except: pass
 
+async def fazer_requisicao_odds(session, url, parametros):
+    global chave_odds_atual
+    for _ in range(len(API_KEYS_ODDS)):
+        async with api_lock: chave_teste = API_KEYS_ODDS[chave_odds_atual]
+        parametros["apiKey"] = chave_teste
+        try:
+            async with session.get(url, params=parametros, timeout=15) as resposta:
+                if resposta.status == 200: return await resposta.json()
+                elif resposta.status in[401, 429]: 
+                    async with api_lock: chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
+                else: return await resposta.json()
+        except Exception: pass
+    return None
+
 def calcular_prob_justa(outcomes):
     try:
         margem = sum(1 / item["price"] for item in outcomes if item["price"] > 0)
         return {item["name"]: (1 / item["price"]) / margem for item in outcomes if item["price"] > 0}
     except: return {}
 
-def validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real, liga):
+# ==========================================
+# 3. MÓDULO DE INTELIGÊNCIA ARTIFICIAL (MACHINE LEARNING)
+# ==========================================
+def treinar_inteligencia_artificial():
+    """ Lê o histórico do Sindicato e ajusta os critérios automaticamente """
+    global memoria_ia
+    memoria_ia.clear()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # Busca todas as apostas já finalizadas (Greens e Reds)
+        cursor.execute("SELECT liga, mercado, lucro, stake FROM operacoes_tipster WHERE status != 'PENDENTE'")
+        historico = cursor.fetchall()
+        conn.close()
+
+        # Agrupa os dados por Liga e Mercado
+        dados_agrupados = {}
+        for liga, mercado, lucro, stake in historico:
+            chave = f"{liga}_{mercado}"
+            if chave not in dados_agrupados:
+                dados_agrupados[chave] = {"apostas": 0, "lucro_total": 0.0, "stake_total": 0.0}
+            dados_agrupados[chave]["apostas"] += 1
+            dados_agrupados[chave]["lucro_total"] += lucro
+            dados_agrupados[chave]["stake_total"] += stake
+
+        # Calcula o ROI (Retorno) e cria as regras de aprendizado
+        for chave, dados in dados_agrupados.items():
+            if dados["apostas"] >= 5: # Só aprende se tiver histórico suficiente (mínimo 5 apostas)
+                roi = (dados["lucro_total"] / dados["stake_total"]) * 100
+                memoria_ia[chave] = roi
+                
+    except Exception as e: print(f"Erro na IA: {e}")
+
+def validar_com_ia(odd_oferecida, prob_real, ev_real, liga, liga_titulo, mercado_nome):
+    """ Filtro afiado turbinado com o Aprendizado de Máquina """
     if not (1.40 <= odd_oferecida <= 7.00): return False 
     if ev_real > 0.15: return False 
     
+    # 1. Base EV exigido de acordo com a odd
     ev_exigido = 0.0
     if odd_oferecida <= 2.50: ev_exigido = 0.015
     elif odd_oferecida <= 4.00: ev_exigido = 0.040
     else: ev_exigido = 0.070 
 
+    # 2. Penalidade por Liga Perigosa
     ligas_tier_2 =["serie_b", "turkey", "belgium", "mexico", "uruguay", "sudamericana"]
     if any(l in liga for l in ligas_tier_2):
         ev_exigido += 0.015 
+
+    # 3. MÁGICA DA IA: Consulta a memória do robô!
+    chave_ia = f"{liga_titulo}_{mercado_nome}"
+    if chave_ia in memoria_ia:
+        roi_historico = memoria_ia[chave_ia]
+        
+        # Se esse mercado/liga tá dando muito prejuízo (ROI < -25%), BLOQUEIA a aposta! (O Bot aprendeu o erro)
+        if roi_historico <= -25.0:
+            return False
+            
+        # Se tá dando um prejuízo leve (ROI entre 0 e -25%), EXIGE MAIS SEGURANÇA (EV maior)
+        elif roi_historico < 0:
+            ev_exigido += 0.020 # Sobe a régua! Só entra se for muito bom.
+            
+        # Se tá dando MUITO LUCRO (ROI > +15%), FACILITA A ENTRADA
+        elif roi_historico >= 15.0:
+            ev_exigido -= 0.010 # Abaixa a régua, mercado lucrativo!
+
     return ev_real >= ev_exigido
 
 # ==========================================
-# 3. NÚCLEO ASYNC (VARREDURA)
+# 4. NÚCLEO ASYNC DE VARREDURA
 # ==========================================
 async def processar_liga_async(session, liga, agora_br, faz_12_horas):
     is_nba = "basketball" in liga
@@ -172,7 +210,6 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                     for out in m_h2h["outcomes"]:
                         if out["name"] not in melhores_odds_h2h or out["price"] > melhores_odds_h2h[out["name"]][0]:
                             melhores_odds_h2h[out["name"]] = (out["price"], b["title"])
-            
             if len(melhores_odds_h2h) >= 2:
                 soma_prob = sum(1 / v[0] for v in melhores_odds_h2h.values())
                 if 0 < soma_prob < 1.0: 
@@ -199,7 +236,7 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                             dropping_alerts[chave_hist] = True
                     historico_pinnacle[chave_hist] = {"price": preco_atual, "expires": agora_br + timedelta(hours=24)}
 
-            # OPORTUNIDADES +EV
+            # OPORTUNIDADES +EV (COM IA)
             oportunidades_jogo =[]
             for soft_b in bookmakers:
                 if soft_b["key"] == SHARP_BOOKIE or soft_b["key"] not in SOFT_BOOKIES: continue
@@ -215,10 +252,11 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                             odd_oferecida = s_outcome["price"]
                             if prob_real > 0:
                                 ev_real = (prob_real * odd_oferecida) - 1
-                                if validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real, liga):
+                                traducao = m_key.replace("h2h", "Vencedor (1X2)").replace("btts", "Ambas Marcam").replace("draw_no_bet", "Empate Anula").replace("double_chance", "Dupla Aposta")
+                                # MANDA PRA IA AVALIAR SE APROVA OU REPROVA
+                                if validar_com_ia(odd_oferecida, prob_real, ev_real, liga, evento['sport_title'], traducao):
                                     chave_hist = f"{jogo_id}_{m_key}_{s_outcome['name']}_"
                                     is_dropping = dropping_alerts.get(chave_hist, False)
-                                    traducao = m_key.replace("h2h", "Vencedor (1X2)").replace("btts", "Ambas Marcam").replace("draw_no_bet", "Empate Anula").replace("double_chance", "Dupla Aposta")
                                     selecao = "Sim" if s_outcome["name"]=="Yes" else "Não" if s_outcome["name"]=="No" else s_outcome["name"].replace("/", " ou ")
                                     oportunidades_jogo.append((traducao, selecao, odd_oferecida, prob_real, ev_real, nome_casa, is_dropping))
 
@@ -241,7 +279,8 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                                     odd_oferecida = s_outcome["price"]
                                     if prob_real > 0:
                                         ev_real = (prob_real * odd_oferecida) - 1
-                                        if validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real, liga):
+                                        # MANDA PRA IA AVALIAR
+                                        if validar_com_ia(odd_oferecida, prob_real, ev_real, liga, evento['sport_title'], nome_mercado):
                                             chave_hist = f"{jogo_id}_{m_key}_{s_outcome['name']}_{ponto}"
                                             is_dropping = dropping_alerts.get(chave_hist, False)
                                             oportunidades_jogo.append((nome_mercado, selecao_nome, odd_oferecida, prob_real, ev_real, nome_casa, is_dropping))
@@ -262,17 +301,23 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
     except Exception as e: pass
 
 # ==========================================
-# 4. EXECUTOR ASYNC & ENVIO TELEGRAM
+# 5. EXECUTOR ASYNC & ENVIO TELEGRAM
 # ==========================================
 async def gerenciar_varreduras_e_enviar():
-    global ultima_varredura_normal
+    global ultima_varredura_normal, jogos_enviados, historico_pinnacle
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
     faz_12_horas = (agora_br - ultima_varredura_normal).total_seconds() >= 43200
     
-    if faz_12_horas: print(f"\n🔄[TURNO DE 12H - {agora_br.strftime('%H:%M:%S')}] Motor Async LIGADO! Varrando o mundo...")
+    # TREINAMENTO DE IA: Antes de varrer, ele aprende com o histórico!
+    treinar_inteligencia_artificial()
+    if memoria_ia:
+        print(f"🧠 Cérebro IA atualizado! Padrões aprendidos: {len(memoria_ia)}")
+
+    if faz_12_horas: print(f"\n🔄[TURNO DE 12H - {agora_br.strftime('%H:%M:%S')}] Motor LIGADO! Varrando o mundo...")
     else: print(f"\n🕵️‍♂️[ESPIÃO - {agora_br.strftime('%H:%M:%S')}] Buscando Surebets e Dropping Odds...")
         
-    limpar_memoria_antiga()
+    jogos_enviados ={k: v for k, v in jogos_enviados.items() if agora_br <= v}
+    historico_pinnacle ={k: v for k, v in historico_pinnacle.items() if agora_br <= v["expires"]}
     oportunidades_globais.clear()
     surebets_globais.clear()
     
@@ -283,16 +328,12 @@ async def gerenciar_varreduras_e_enviar():
         if surebets_globais:
             for arb in surebets_globais:
                 texto_arb = (
-                    "🚨🚨 <b>SUREBET DETECTADA (RISCO ZERO)</b> 🚨🚨\n"
-                    "<i>Apostas cruzadas cobrindo 100% das opções garantindo lucro!</i>\n\n"
+                    "🚨🚨 <b>SUREBET DETECTADA (RISCO ZERO)</b> 🚨🚨\n\n"
                     f"🏆 <b>Liga:</b> {arb['liga']}\n"
-                    f"⏰ <b>Horário:</b> {arb['horario'].strftime('%H:%M')}\n"
                     f"⚽ <b>Jogo:</b> {arb['home_team']} x {arb['away_team']}\n\n"
-                    f"<b>COMO MONTAR A OPERAÇÃO:</b>\n"
                 )
                 for selecao, dados in arb["odds"].items():
                     texto_arb += f"👉 <b>{selecao}:</b> Odd {dados[0]:.2f} na 🏛️ {dados[1]}\n"
-                
                 texto_arb += f"\n💰 <b>LUCRO 100% GARANTIDO:</b> +{arb['lucro']*100:.2f}%\n"
                 await enviar_telegram_async(session, texto_arb)
                 jogos_enviados[arb["jogo_id"]] = datetime.now() + timedelta(hours=24)
@@ -303,7 +344,12 @@ async def gerenciar_varreduras_e_enviar():
             
             for op in top_snipers:
                 ev_real, prob_justa, odd_bookie = op["ev_real"], op["prob_justa"], op["odd_bookie"]
+                chave_ia = f"{op['evento']['sport_title']}_{op['mercado_nome']}"
+                roi_atual = memoria_ia.get(chave_ia, 0)
                 
+                # Tag visual de que a IA ajudou nessa decisão
+                tag_ia = f"\n🤖 <b>Selo IA:</b> Liga/Mercado com {roi_atual:.1f}% de ROI histórico." if roi_atual > 0 else ""
+
                 if op["is_dropping"]:
                     cabecalho = "📉 <b>SMART MONEY (DERRETIMENTO DE ODD)</b> 📉"
                     kelly_pct = 2.0
@@ -331,14 +377,10 @@ async def gerenciar_varreduras_e_enviar():
                     f"🏛️ <b>Casa de Aposta:</b> {op['nome_bookie']}\n"
                     f"📈 <b>Odd Atual:</b> {odd_bookie:.2f}\n\n"
                     f"💰 <b>Gestão Sugerida:</b> {kelly_pct:.1f}% da Banca\n"
-                    f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.2f}%\n"
+                    f"📊 <b>Vantagem Matemática (+EV):</b> +{ev_real*100:.2f}%{tag_ia}\n"
                 )
                 await enviar_telegram_async(session, texto_msg)
                 jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
-                
-                # ----------------------------------------------------
-                # SALVA A APOSTA NO BANCO DE DADOS PARA O BOT 2 AUDITAR
-                # ----------------------------------------------------
                 salvar_aposta_banco(op, kelly_pct)
 
             if faz_12_horas: ultima_varredura_normal = agora_br
@@ -351,5 +393,5 @@ async def loop_infinito():
 
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Sindicato ASIÁTICO v10.0 INICIADO!")
+    print("🤖 Bot Sindicato ASIÁTICO v10.0 (Com Cérebro de IA) INICIADO!")
     asyncio.run(loop_infinito())
