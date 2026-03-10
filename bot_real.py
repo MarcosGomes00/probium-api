@@ -51,20 +51,16 @@ chave_odds_atual = 0
 ultima_varredura_normal = datetime.min.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
 api_lock = asyncio.Lock()
 
-oportunidades_globais = []
+oportunidades_globais =[]
 surebets_globais =[]
 
 # ==========================================
-# 2. FUNÇÕES DE SUPORTE ASSÍNCRONAS
+# 2. FUNÇÕES DE SUPORTE ASSÍNCRONAS & BANCO DE DADOS
 # ==========================================
 def limpar_memoria_antiga():
     agora = datetime.now()
-    
-    # Limpa Anti-Spam
     para_remover =[k for k, v in jogos_enviados.items() if agora > v]
     for k in para_remover: del jogos_enviados[k]
-        
-    # Limpa Histórico de Odds (Para não vazar memória RAM)
     para_remover_hist =[k for k, v in historico_pinnacle.items() if agora > v["expires"]]
     for k in para_remover_hist: del historico_pinnacle[k]
 
@@ -96,6 +92,28 @@ def inicializar_banco():
     conn.commit()
     conn.close()
 
+def salvar_aposta_banco(op, stake):
+    """ NOVIDADE: Registra a aposta no banco para o Bot 2 auditar """
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        id_aposta = f"{op['jogo_id']}_{op['mercado_nome'][:4]}_{op['selecao_nome'][:4]}".replace(" ", "")
+        data_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime('%d/%m/%Y')
+        
+        cursor.execute("""
+            INSERT OR IGNORE INTO operacoes_tipster 
+            (id_aposta, esporte, jogo, liga, mercado, selecao, odd, prob, ev, stake, status, lucro, data_hora)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', 0, ?)
+        """, (
+            id_aposta, op['esporte'], f"{op['home_team']} x {op['away_team']}",
+            op['evento']['sport_title'], op['mercado_nome'], op['selecao_nome'],
+            op['odd_bookie'], op['prob_justa'], op['ev_real'], stake, data_atual
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Erro ao salvar no BD: {e}")
+
 async def enviar_telegram_async(session, texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
@@ -123,7 +141,7 @@ def validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real, liga):
     return ev_real >= ev_exigido
 
 # ==========================================
-# 3. NÚCLEO ASYNC (VARREDURA NA VELOCIDADE DA LUZ)
+# 3. NÚCLEO ASYNC (VARREDURA)
 # ==========================================
 async def processar_liga_async(session, liga, agora_br, faz_12_horas):
     is_nba = "basketball" in liga
@@ -146,9 +164,7 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
 
             bookmakers = evento.get("bookmakers",[])
             
-            # -----------------------------------------------
-            # 🚨 SCANNER DE ARBITRAGEM (SUREBETS)
-            # -----------------------------------------------
+            # SUREBETS
             melhores_odds_h2h = {}
             for b in bookmakers:
                 m_h2h = next((m for m in b.get("markets",[]) if m["key"] == "h2h"), None)
@@ -165,12 +181,10 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                         surebets_globais.append({
                             "jogo_id": jogo_id, "home_team": evento["home_team"], "away_team": evento["away_team"],
                             "liga": evento['sport_title'], "horario": horario_br, "lucro": lucro_garantido,
-                            "odds": melhores_odds_h2h
+                            "odds": melhores_odds_h2h, "esporte": liga
                         })
 
-            # -----------------------------------------------
-            # 📉 RASTREADOR DE SMART MONEY (DROPPING ODDS)
-            # -----------------------------------------------
+            # SMART MONEY (DROPPING ODDS)
             pinnacle = next((b for b in bookmakers if b["key"] == SHARP_BOOKIE), None)
             if not pinnacle: continue 
 
@@ -179,19 +193,13 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                 for out in m["outcomes"]:
                     chave_hist = f"{jogo_id}_{m['key']}_{out['name']}_{out.get('point','')}"
                     preco_atual = out["price"]
-                    
-                    # Checa se a odd derreteu mais de 8% desde a última varredura
                     if chave_hist in historico_pinnacle:
                         preco_antigo = historico_pinnacle[chave_hist]["price"]
                         if (preco_antigo - preco_atual) / preco_antigo >= 0.08:
                             dropping_alerts[chave_hist] = True
-                    
-                    # Salva a odd atual na memória por 24h
                     historico_pinnacle[chave_hist] = {"price": preco_atual, "expires": agora_br + timedelta(hours=24)}
 
-            # -----------------------------------------------
-            # 💎 CÁLCULO DE VALOR (+EV)
-            # -----------------------------------------------
+            # OPORTUNIDADES +EV
             oportunidades_jogo =[]
             for soft_b in bookmakers:
                 if soft_b["key"] == SHARP_BOOKIE or soft_b["key"] not in SOFT_BOOKIES: continue
@@ -210,7 +218,6 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                                 if validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real, liga):
                                     chave_hist = f"{jogo_id}_{m_key}_{s_outcome['name']}_"
                                     is_dropping = dropping_alerts.get(chave_hist, False)
-                                    
                                     traducao = m_key.replace("h2h", "Vencedor (1X2)").replace("btts", "Ambas Marcam").replace("draw_no_bet", "Empate Anula").replace("double_chance", "Dupla Aposta")
                                     selecao = "Sim" if s_outcome["name"]=="Yes" else "Não" if s_outcome["name"]=="No" else s_outcome["name"].replace("/", " ou ")
                                     oportunidades_jogo.append((traducao, selecao, odd_oferecida, prob_real, ev_real, nome_casa, is_dropping))
@@ -262,21 +269,18 @@ async def gerenciar_varreduras_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
     faz_12_horas = (agora_br - ultima_varredura_normal).total_seconds() >= 43200
     
-    if faz_12_horas: print(f"\n🔄[TURNO DE 12H - {agora_br.strftime('%H:%M:%S')}] Motor Async LIGADO! Varrando o mundo inteiro...")
+    if faz_12_horas: print(f"\n🔄[TURNO DE 12H - {agora_br.strftime('%H:%M:%S')}] Motor Async LIGADO! Varrando o mundo...")
     else: print(f"\n🕵️‍♂️[ESPIÃO - {agora_br.strftime('%H:%M:%S')}] Buscando Surebets e Dropping Odds...")
         
     limpar_memoria_antiga()
     oportunidades_globais.clear()
     surebets_globais.clear()
     
-    # 🔥 MÁGICA ASYNC: Faz todas as requisições ao mesmo tempo!
     async with aiohttp.ClientSession() as session:
         tasks =[processar_liga_async(session, liga, agora_br, faz_12_horas) for liga in LIGAS]
         await asyncio.gather(*tasks)
 
-        # --- DISPARAR SUREBETS ---
         if surebets_globais:
-            print(f"🚨 ACHAMOS {len(surebets_globais)} SUREBETS (ARBITRAGEM)!")
             for arb in surebets_globais:
                 texto_arb = (
                     "🚨🚨 <b>SUREBET DETECTADA (RISCO ZERO)</b> 🚨🚨\n"
@@ -293,7 +297,6 @@ async def gerenciar_varreduras_e_enviar():
                 await enviar_telegram_async(session, texto_arb)
                 jogos_enviados[arb["jogo_id"]] = datetime.now() + timedelta(hours=24)
 
-        # --- DISPARAR OPORTUNIDADES +EV ---
         if oportunidades_globais:
             oportunidades_globais.sort(key=lambda x: x["ev_real"], reverse=True)
             top_snipers = oportunidades_globais[:5] if faz_12_horas else oportunidades_globais[:3]
@@ -302,68 +305,51 @@ async def gerenciar_varreduras_e_enviar():
                 ev_real, prob_justa, odd_bookie = op["ev_real"], op["prob_justa"], op["odd_bookie"]
                 
                 if op["is_dropping"]:
-                    cabecalho = "📉 <b>SMART MONEY (DERRETIMENTO DE ODD)</b> 📉\n<i>O dinheiro Asiático entrou pesado e a Pinnacle derreteu. A Bet recreativa dormiu!</i>"
+                    cabecalho = "📉 <b>SMART MONEY (DERRETIMENTO DE ODD)</b> 📉"
                     kelly_pct = 2.0
                 elif odd_bookie >= 4.01:
-                    cabecalho = "🦓 <b>ZEBRA DE VALOR (ANÁLISE SUPERIOR)</b> 🦓\n<i>Falha brutal da casa identificada. Lucro de alta variância!</i>"
+                    cabecalho = "🦓 <b>ZEBRA DE VALOR (ANÁLISE SUPERIOR)</b> 🦓"
                     kelly_pct = 0.5 
                 elif ev_real >= 0.035 and prob_justa >= 0.50:
-                    cabecalho = "🎯🏆 <b>OPORTUNIDADE ÚNICA (ENTRADA PESADA)</b> 🏆🎯\n<i>Padrão Diamante: Altíssima assertividade + Matemática perfeita.</i>"
+                    cabecalho = "🎯🏆 <b>OPORTUNIDADE ÚNICA (ENTRADA PESADA)</b> 🏆🎯"
                     kelly_pct = 3.0 
                 else:
                     cabecalho = "💎 <b>APOSTA INSTITUCIONAL (PADRÃO)</b> 💎"
-                    b_kelly, q_kelly = odd_bookie - 1, 1 - prob_justa
-                    try: kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 2.0))
+                    try: kelly_pct = max(1.0, min(((prob_justa - ((1-prob_justa)/(odd_bookie-1))) * 0.25) * 100, 2.0))
                     except: kelly_pct = 1.0
 
                 horas_f, min_f = int(op["minutos_faltando"] // 60), int(op["minutos_faltando"] % 60)
                 tempo_str = f"{horas_f}h {min_f}min" if horas_f > 0 else f"{min_f} min"
-                emoji = "🏀" if op["is_nba"] else "⚽"
                 
                 texto_msg = (
                     f"{cabecalho}\n\n"
                     f"🏆 <b>Liga:</b> {op['evento']['sport_title']}\n"
                     f"⏰ <b>Horário:</b> {op['horario_br'].strftime('%H:%M')} (Faltam {tempo_str})\n"
-                    f"{emoji} <b>Jogo:</b> {op['home_team']} x {op['away_team']}\n\n"
+                    f"⚽ <b>Jogo:</b> {op['home_team']} x {op['away_team']}\n\n"
                     f"🎯 <b>Mercado:</b> {op['mercado_nome']}\n"
                     f"👉 <b>Entrada:</b> {op['selecao_nome']}\n"
                     f"🏛️ <b>Casa de Aposta:</b> {op['nome_bookie']}\n"
                     f"📈 <b>Odd Atual:</b> {odd_bookie:.2f}\n\n"
                     f"💰 <b>Gestão Sugerida:</b> {kelly_pct:.1f}% da Banca\n"
-                    f"📊 <b>Vantagem Matemática (+EV):</b> +{ev_real*100:.2f}%\n"
+                    f"📊 <b>Vantagem Matemática:</b> +{ev_real*100:.2f}%\n"
                 )
                 await enviar_telegram_async(session, texto_msg)
                 jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
-
-            # --- MÚLTIPLA BLINDADA DE 12 HORAS ---
-            if faz_12_horas:
-                jogos_seguros =[op for op in top_snipers if op["prob_justa"] >= 0.55 and op["odd_bookie"] <= 1.80]
-                if len(jogos_seguros) >= 2:
-                    m1, m2 = jogos_seguros[0], jogos_seguros[1]
-                    odd_dupla = m1["odd_bookie"] * m2["odd_bookie"]
-                    texto_multipla = (
-                        "🔥🧩 <b>COMBO +EV SINDICATO (MÚLTIPLA)</b> 🧩🔥\n"
-                        "<i>Juntamos as 2 análises de maior Win-Rate do momento!</i>\n\n"
-                        f"1️⃣ <b>{m1['home_team']} x {m1['away_team']}</b>\n👉 {m1['mercado_nome']} - <b>{m1['selecao_nome']}</b> (@{m1['odd_bookie']:.2f})\n\n"
-                        f"2️⃣ <b>{m2['home_team']} x {m2['away_team']}</b>\n👉 {m2['mercado_nome']} - <b>{m2['selecao_nome']}</b> (@{m2['odd_bookie']:.2f})\n\n"
-                        f"🚀 <b>ODD FINAL DA DUPLA:</b> {odd_dupla:.2f}\n💰 <b>Stake:</b> 0.5% a 1.0% da Banca"
-                    )
-                    await enviar_telegram_async(session, texto_multipla)
                 
-                ultima_varredura_normal = agora_br
+                # ----------------------------------------------------
+                # SALVA A APOSTA NO BANCO DE DADOS PARA O BOT 2 AUDITAR
+                # ----------------------------------------------------
+                salvar_aposta_banco(op, kelly_pct)
+
+            if faz_12_horas: ultima_varredura_normal = agora_br
 
 async def loop_infinito():
     while True:
         await gerenciar_varreduras_e_enviar()
-        print("\n⏳ Bot dormindo por 2 horas (Rastreador Smart Money Ativo)...")
+        print("\n⏳ Bot dormindo por 2 horas...")
         await asyncio.sleep(7200)
 
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Sindicato ASIÁTICO v10.0 (ASYNC ENGINE + SMART MONEY) INICIADO!")
-    print("⚡ Motor Assíncrono Ativo: Analisando o mundo inteiro em Segundos.")
-    print("📉 Smart Money Tracker Ativo: Vigiando derretimentos de odd > 8%.")
-    print("🚨 Scanner de ARBITRAGEM (Surebets) de Risco Zero Operacional.")
-    
-    # Inicia o Loop Assíncrono
+    print("🤖 Bot Sindicato ASIÁTICO v10.0 INICIADO!")
     asyncio.run(loop_infinito())
