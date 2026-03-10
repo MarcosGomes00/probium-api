@@ -42,7 +42,6 @@ jogos_enviados = {}
 historico_pinnacle = {} 
 memoria_ia = {} 
 chave_odds_atual = 0 
-ultima_varredura_normal = datetime.min.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
 api_lock = asyncio.Lock()
 
 oportunidades_globais =[]
@@ -78,7 +77,7 @@ def salvar_aposta_banco(op, stake):
         ))
         conn.commit()
         conn.close()
-    except Exception as e: pass
+    except: pass
 
 async def enviar_telegram_async(session, texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -129,16 +128,16 @@ def treinar_inteligencia_artificial():
             if dados["apostas"] >= 5: 
                 roi = (dados["lucro_total"] / dados["stake_total"]) * 100
                 memoria_ia[chave] = roi
-    except Exception: pass
+    except: pass
 
 def validar_com_ia(odd_oferecida, prob_real, ev_real, liga, liga_titulo, mercado_nome):
-    """ FILTRO DE EV OTIMIZADO (Mínimo 1.5% - Seguro 1.0%) """
-    if not (1.30 <= odd_oferecida <= 7.00): return False 
+    """ FILTRO DE EV OTIMIZADO (Múltiplas, Snipers e Zebras) """
+    if not (1.30 <= odd_oferecida <= 15.00): return False 
     if ev_real > 0.15: return False 
     
-    ev_exigido = 0.015 
-    if odd_oferecida <= 1.80: ev_exigido = 0.010 
-    elif odd_oferecida >= 3.00: ev_exigido = 0.030 
+    if odd_oferecida <= 1.70: ev_exigido = 0.010 
+    elif odd_oferecida <= 3.49: ev_exigido = 0.020 
+    else: ev_exigido = 0.035 
 
     ligas_tier_2 =["serie_b", "turkey", "belgium", "mexico", "uruguay", "sudamericana"]
     if any(l in liga for l in ligas_tier_2): ev_exigido += 0.010 
@@ -152,15 +151,11 @@ def validar_com_ia(odd_oferecida, prob_real, ev_real, liga, liga_titulo, mercado
 
     return ev_real >= ev_exigido
 
-async def processar_liga_async(session, liga, agora_br, faz_12_horas):
-    # =======================================================
-    # EXTREMA ECONOMIA - PARAMETROS REDUZIDOS PARA AS 9 CHAVES DURAREM 30 DIAS
-    # =======================================================
+async def processar_liga_async(session, liga, agora_br):
     is_nba = "basketball" in liga
     mercados_alvo = "h2h,spreads" if is_nba else "h2h,btts"
     casas_busca = ",".join(TODAS_CASAS)
     
-    # Busca apenas na Região EU (Bet365 e Pinnacle estão lá). Corta o custo pela metade!
     parametros = {"regions": "eu", "markets": mercados_alvo, "bookmakers": casas_busca}
     url_odds = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/"
     
@@ -177,25 +172,6 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
             if not (15 <= minutos_faltando <= 1440): continue 
 
             bookmakers = evento.get("bookmakers",[])
-            
-            melhores_odds_h2h = {}
-            for b in bookmakers:
-                m_h2h = next((m for m in b.get("markets",[]) if m["key"] == "h2h"), None)
-                if m_h2h:
-                    for out in m_h2h["outcomes"]:
-                        if out["name"] not in melhores_odds_h2h or out["price"] > melhores_odds_h2h[out["name"]][0]:
-                            melhores_odds_h2h[out["name"]] = (out["price"], b["title"])
-            if len(melhores_odds_h2h) >= 2:
-                soma_prob = sum(1 / v[0] for v in melhores_odds_h2h.values())
-                if 0 < soma_prob < 1.0: 
-                    lucro_garantido = (1 / soma_prob) - 1
-                    if lucro_garantido > 0.005: 
-                        surebets_globais.append({
-                            "jogo_id": jogo_id, "home_team": evento["home_team"], "away_team": evento["away_team"],
-                            "liga": evento['sport_title'], "horario": horario_br, "lucro": lucro_garantido,
-                            "odds": melhores_odds_h2h, "esporte": liga
-                        })
-
             pinnacle = next((b for b in bookmakers if b["key"] == SHARP_BOOKIE), None)
             if not pinnacle: continue 
 
@@ -254,75 +230,103 @@ async def processar_liga_async(session, liga, agora_br, faz_12_horas):
                                 except: pass
 
             if oportunidades_jogo:
-                melhor_op = max(oportunidades_jogo, key=lambda x: x[3]) # Ranqueia pela Probabilidade dentro do jogo
-                is_rara = (melhor_op[4] >= 0.03) or melhor_op[6] 
+                melhor_op = max(oportunidades_jogo, key=lambda x: x[4]) 
                 
-                if faz_12_horas or is_rara:
-                    oportunidades_globais.append({
-                        "jogo_id": jogo_id, "evento": evento, "home_team": evento["home_team"], "away_team": evento["away_team"],
-                        "horario_br": horario_br, "minutos_faltando": minutos_faltando, "mercado_nome": melhor_op[0],
-                        "selecao_nome": melhor_op[1], "odd_bookie": melhor_op[2], "prob_justa": melhor_op[3], 
-                        "ev_real": melhor_op[4], "nome_bookie": melhor_op[5], "is_dropping": melhor_op[6], 
-                        "is_nba": is_nba, "esporte": liga
-                    })
+                oportunidades_globais.append({
+                    "jogo_id": jogo_id, "evento": evento, "home_team": evento["home_team"], "away_team": evento["away_team"],
+                    "horario_br": horario_br, "minutos_faltando": minutos_faltando, "mercado_nome": melhor_op[0],
+                    "selecao_nome": melhor_op[1], "odd_bookie": melhor_op[2], "prob_justa": melhor_op[3], 
+                    "ev_real": melhor_op[4], "nome_bookie": melhor_op[5], "is_dropping": melhor_op[6], 
+                    "is_nba": is_nba, "esporte": liga
+                })
     except Exception as e: pass
 
 async def gerenciar_varreduras_e_enviar():
-    global ultima_varredura_normal, jogos_enviados, historico_pinnacle
+    global jogos_enviados, historico_pinnacle
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    faz_12_horas = (agora_br - ultima_varredura_normal).total_seconds() >= 43200
     
     treinar_inteligencia_artificial()
-    if memoria_ia:
-        print(f"🧠 IA Aprendendo: {len(memoria_ia)} padrões registrados.")
-
-    if faz_12_horas: print(f"\n🔄[TURNO PRINCIPAL - {agora_br.strftime('%H:%M:%S')}] Varredura global autorizada!")
-    else: print(f"\n🕵️‍♂️[TURNO ESPIÃO - {agora_br.strftime('%H:%M:%S')}] Checando alertas de Dropping Odds...")
+    print(f"\n🔄[VARREDURA GERAL - {agora_br.strftime('%H:%M:%S')}] Buscando e filtrando os melhores jogos...")
         
     jogos_enviados ={k: v for k, v in jogos_enviados.items() if agora_br <= v}
     historico_pinnacle ={k: v for k, v in historico_pinnacle.items() if agora_br <= v["expires"]}
     oportunidades_globais.clear()
-    surebets_globais.clear()
     
     async with aiohttp.ClientSession() as session:
-        tasks =[processar_liga_async(session, liga, agora_br, faz_12_horas) for liga in LIGAS]
+        tasks =[processar_liga_async(session, liga, agora_br) for liga in LIGAS]
         await asyncio.gather(*tasks)
 
-        if surebets_globais:
-            for arb in surebets_globais:
-                texto_arb = (
-                    "🚨🚨 <b>SUREBET DETECTADA (RISCO ZERO)</b> 🚨🚨\n\n"
-                    f"🏆 <b>Liga:</b> {arb['liga']}\n"
-                    f"⚽ <b>Jogo:</b> {arb['home_team']} x {arb['away_team']}\n\n"
-                )
-                for selecao, dados in arb["odds"].items():
-                    texto_arb += f"👉 <b>{selecao}:</b> Odd {dados[0]:.2f} na 🏛️ {dados[1]}\n"
-                texto_arb += f"\n💰 <b>LUCRO 100% GARANTIDO:</b> +{arb['lucro']*100:.2f}%\n"
-                await enviar_telegram_async(session, texto_arb)
-                jogos_enviados[arb["jogo_id"]] = datetime.now() + timedelta(hours=24)
-
         if oportunidades_globais:
-            # FUNIL: Ordena da mais Segura (Alta Prob) para a mais Arriscada
-            oportunidades_globais.sort(key=lambda x: x["prob_justa"], reverse=True)
             
-            # De 15 jogos bons, envia SÓ OS 5 MELHORES (Qualidade > Quantidade)
-            top_snipers = oportunidades_globais[:5] if faz_12_horas else oportunidades_globais[:3]
+            # =================================================================
+            # PASSO 1: CRIAR O BILHETE DE MÚLTIPLA SE TIVER JOGOS BONS
+            # =================================================================
+            candidatas_multipla = [op for op in oportunidades_globais if op["odd_bookie"] <= 1.70 and op["prob_justa"] >= 0.60]
+            jogos_multipla_ids =[]
             
-            for op in top_snipers:
+            if len(candidatas_multipla) >= 2:
+                # Pega os 2 ou 3 jogos mais SEGUROS para montar o bilhete
+                candidatas_multipla.sort(key=lambda x: x["prob_justa"], reverse=True)
+                jogos_multipla = candidatas_multipla[:3]
+                jogos_multipla_ids = [op["jogo_id"] for op in jogos_multipla]
+                
+                odd_total = 1.0
+                texto_multipla = "🔥 <b>OPORTUNIDADE IMPERDÍVEL: MÚLTIPLA PRONTA</b> 🔥\n\n"
+                
+                for i, op in enumerate(jogos_multipla, 1):
+                    odd_total *= op["odd_bookie"]
+                    texto_multipla += f"⚽ <b>Jogo {i}: {op['home_team']} x {op['away_team']}</b>\n"
+                    texto_multipla += f"👉 <b>Entrada:</b> {op['mercado_nome']} - {op['selecao_nome']}\n"
+                    texto_multipla += f"📈 <b>Odd:</b> {op['odd_bookie']:.2f} | ⏰ {op['horario_br'].strftime('%H:%M')}\n\n"
+
+                texto_multipla += f"💵 <b>ODD TOTAL DO BILHETE:</b> {odd_total:.2f}\n"
+                texto_multipla += f"💰 <b>Gestão Sugerida:</b> 0.5% a 1.0% da Banca\n"
+                texto_multipla += f"✅ <i>Cruze essas entradas na sua casa de aposta!</i>"
+                
+                await enviar_telegram_async(session, texto_multipla)
+                
+                # Registra as apostas da múltipla para não enviar como single
+                for op in jogos_multipla:
+                    jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
+                    salvar_aposta_banco(op, 0.5)
+
+            # =================================================================
+            # PASSO 2: FILTRAR SÓ OS 5 MELHORES SINGLES DO DIA (ANTI-SPAM)
+            # =================================================================
+            singles = [op for op in oportunidades_globais if op["jogo_id"] not in jogos_multipla_ids]
+            
+            # Ordena pela MAIOR PROBABILIDADE de Green primeiro
+            singles.sort(key=lambda x: x["prob_justa"], reverse=True)
+            
+            # Corta a lista: Fica apenas com os 5 melhores
+            top_singles = singles[:5]
+
+            # =================================================================
+            # PASSO 3: ORDENAR OS 5 MELHORES POR HORÁRIO E ENVIAR COM AS TAGS
+            # =================================================================
+            top_singles.sort(key=lambda x: x["horario_br"])
+            
+            for op in top_singles:
                 ev_real, prob_justa, odd_bookie = op["ev_real"], op["prob_justa"], op["odd_bookie"]
                 chave_ia = f"{op['evento']['sport_title']}_{op['mercado_nome']}"
                 roi_atual = memoria_ia.get(chave_ia, 0)
-                
                 tag_ia = f"\n🤖 <b>Selo IA:</b> Mercado com {roi_atual:.1f}% de ROI histórico." if roi_atual > 0 else ""
 
                 if op["is_dropping"]:
-                    cabecalho = "📉 <b>SMART MONEY (DERRETIMENTO DE ODD)</b> 📉"
+                    cabecalho = "📉 <b>SMART MONEY (DERRETIMENTO DE ODD)</b>"
+                    confianca = "🔥 ELITE"
                     kelly_pct = 2.0
-                elif prob_justa >= 0.60:
-                    cabecalho = "🎯🏆 <b>ALTA PROBABILIDADE (MÁXIMA SEGURANÇA)</b> 🏆🎯"
-                    kelly_pct = 2.5 
+                elif odd_bookie <= 1.70:
+                    cabecalho = "🎯 <b>ALTA PROBABILIDADE (ENTRADA SEGURA)</b>"
+                    confianca = "🔥 ELITE"
+                    kelly_pct = 2.0 
+                elif odd_bookie >= 3.50:
+                    cabecalho = "🦓 <b>ZEBRA DE VALOR (ALTO RETORNO)</b>"
+                    confianca = "👍 BOA"
+                    kelly_pct = 0.5 
                 else:
-                    cabecalho = "💎 <b>APOSTA INSTITUCIONAL (+EV PURO)</b> 💎"
+                    cabecalho = "💎 <b>SNIPER INSTITUCIONAL (MODERADA)</b>"
+                    confianca = "💪 FORTE"
                     try: kelly_pct = max(1.0, min(((prob_justa - ((1-prob_justa)/(odd_bookie-1))) * 0.25) * 100, 1.5))
                     except: kelly_pct = 1.0
 
@@ -338,7 +342,8 @@ async def gerenciar_varreduras_e_enviar():
                     f"👉 <b>Entrada:</b> {op['selecao_nome']}\n"
                     f"🏛️ <b>Casa de Aposta:</b> {op['nome_bookie']}\n"
                     f"📈 <b>Odd Atual:</b> {odd_bookie:.2f}\n\n"
-                    f"💰 <b>Gestão Sugerida:</b> {kelly_pct:.1f}% da Banca\n"
+                    f"💰 <b>Gestão/Stake:</b> {kelly_pct:.1f}% Unidades\n"
+                    f"🛡️ <b>Confiança:</b> {confianca}\n"
                     f"📊 <b>Vantagem Matemática (+EV):</b> +{ev_real*100:.2f}%\n"
                     f"✅ <b>Probabilidade Real:</b> {prob_justa*100:.1f}%{tag_ia}\n"
                 )
@@ -346,20 +351,14 @@ async def gerenciar_varreduras_e_enviar():
                 jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
                 salvar_aposta_banco(op, kelly_pct)
 
-            if faz_12_horas: ultima_varredura_normal = agora_br
-
 async def loop_infinito():
     while True:
         await gerenciar_varreduras_e_enviar()
-        # =================================================================
-        # 5 HORAS DE SONO (18.000 SEGUNDOS) PARA BLINDAR SUAS 9 CHAVES.
-        # ISSO GARANTE EXATOS 30 DIAS DE USO SEM GASTAR COM PLANO PAGO!
-        # =================================================================
         print("\n⏳ Bot dormindo por 5 horas (Modo Economia Mensal para 9 Chaves)...")
         await asyncio.sleep(18000)
 
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Sindicato ASIÁTICO v10.0 (Com Cérebro de IA) INICIADO!")
-    print("🎯 MODO: Funil Qualidade (Top 5 Probabilidade) | Economia 30 Dias Ativada!")
+    print("🤖 Bot Sindicato ASIÁTICO v10.0 INICIADO!")
+    print("🎯 MODO: Funil (Top 5 Probabilidade) + Gerador de Múltiplas Integrado!")
     asyncio.run(loop_infinito())
