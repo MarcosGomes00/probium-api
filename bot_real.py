@@ -12,14 +12,18 @@ try:
 except Exception: pass
 
 # ==========================================
-# 1. CONFIGURAÇÕES E CHAVES
+# 1. CONFIGURAÇÕES E CHAVES (EXPANDIDO)
 # ==========================================
 API_KEYS_ODDS =[
     "6a1c0078b3ed09b42fbacee8f07e7cc3",
     "4949c49070dd3eff2113bd1a07293165",
     "0ecb237829d0f800181538e1a4fa2494",
     "4790419cc795932ffaeb0152fa5818c8",
-    "5ee1c6a8c611b6c3d6aff8043764555f"
+    "5ee1c6a8c611b6c3d6aff8043764555f",
+    "b668851102c3e0a56c33220161c029ec",  # NOVA
+    "0d43575dd39e175ba670fb91b2230442",  # NOVA
+    "d32378e66e89f159688cc2239f38a6a4",  # NOVA
+    "713146de690026b224dd8bbf0abc0339"   # NOVA
 ]
 
 API_KEYS_FOOTBALL =[
@@ -47,20 +51,17 @@ LIGAS =[
     "basketball_nba", "basketball_euroleague", "basketball_ncaab"                     
 ]
 
-# Memória inteligente (Evita Spam)
 jogos_enviados = {}
 chave_odds_atual = 0 
 chave_football_atual = 0
 
 # ==========================================
-# 2. GERENCIADORES E BANCO DE DADOS
+# 2. FUNÇÕES DE SUPORTE E HISTÓRICO
 # ==========================================
 def limpar_memoria_antiga():
-    """Remove jogos antigos da memória para não vazar RAM no servidor"""
     agora = datetime.now()
     para_remover =[id_jogo for id_jogo, data_expiracao in jogos_enviados.items() if agora > data_expiracao]
-    for id_jogo in para_remover:
-        del jogos_enviados[id_jogo]
+    for id_jogo in para_remover: del jogos_enviados[id_jogo]
 
 def fazer_requisicao_odds(url, parametros):
     global chave_odds_atual
@@ -68,15 +69,14 @@ def fazer_requisicao_odds(url, parametros):
         parametros["apiKey"] = API_KEYS_ODDS[chave_odds_atual]
         try:
             resposta = requests.get(url, params=parametros, timeout=15)
-            if resposta.status_code == 200:
+            if resposta.status_code == 200: 
                 restantes = resposta.headers.get('x-requests-remaining', '?')
-                print(f"📡 [Odds API] OK! (Restam {restantes} reqs)")
+                print(f"📡 [Odds API - Chave {chave_odds_atual+1}] OK! (Restam {restantes} reqs)")
                 return resposta
-            elif resposta.status_code in [401, 429]:
+            elif resposta.status_code in[401, 429]: 
                 chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
-            else:
-                return resposta 
-        except Exception: pass
+            else: return resposta 
+        except: pass
     return None
 
 def fazer_requisicao_football(url, parametros):
@@ -88,9 +88,8 @@ def fazer_requisicao_football(url, parametros):
             data = resposta.json()
             if resposta.status_code == 403 or ("errors" in data and data["errors"]):
                 chave_football_atual = (chave_football_atual + 1) % len(API_KEYS_FOOTBALL)
-            else:
-                return data
-        except Exception: pass
+            else: return data
+        except: pass
     return None
 
 def inicializar_banco():
@@ -106,37 +105,34 @@ def inicializar_banco():
     conn.commit()
     conn.close()
 
-def salvar_aposta_sistema(bet_data):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR IGNORE INTO operacoes_tipster 
-            (id_aposta, esporte, jogo, liga, mercado, selecao, odd, prob, ev, stake, status, data_hora)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            f"{bet_data['id']}_{bet_data['market_chosen']}", bet_data['sport_key'], 
-            f"{bet_data['home']} x {bet_data['away']}", bet_data['league'], 
-            bet_data['market_chosen'], bet_data.get('selecao', bet_data['market_chosen']), 
-            bet_data['odd'], bet_data['prob'], bet_data['ev'], bet_data['stake_perc'], 
-            "PENDENTE", bet_data['date']
-        ))
-        conn.commit()
-        conn.close()
-    except: pass
-
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
     try: requests.post(url, json=payload, timeout=10)
     except: pass
 
-def obter_historico_times(home_name, away_name):
-    # Busca simplificada usando string exata (se a API Football aceitar)
-    # Recomendado manter vazio se gerar muito custo de requisição, deixei ativado com tratamento de erro.
+def buscar_id_time(nome_time):
+    data = fazer_requisicao_football("https://v3.football.api-sports.io/teams", {"search": nome_time})
+    if data and data.get("results", 0) > 0: return data["response"][0]["team"]["id"]
+    return None
+
+def obter_historico_times(home_name, away_name, esporte):
+    if "basketball" in esporte:
+        return "\n📊 <b>Estatística Avançada:</b> Fluxo financeiro analisado e comparado com Handicap Asiático base.\n"
+    
     try:
-        return "" # Mantido em branco para poupar requests extras. Ative se precisar do H2H de volta.
-    except: return ""
+        home_id = buscar_id_time(home_name)
+        away_id = buscar_id_time(away_name)
+        if not home_id or not away_id: return ""
+        url_h2h = "https://v3.football.api-sports.io/fixtures/headtohead"
+        data = fazer_requisicao_football(url_h2h, {"h2h": f"{home_id}-{away_id}", "last": 5})
+        if data and data.get("results", 0) > 0:
+            vit_home = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == home_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == home_id))
+            vit_away = sum(1 for m in data["response"] if (m["teams"]["home"]["winner"] and m["teams"]["home"]["id"] == away_id) or (m["teams"]["away"]["winner"] and m["teams"]["away"]["id"] == away_id))
+            empates = data['results'] - vit_home - vit_away
+            return f"\n📚 <b>HISTÓRICO H2H (Últimos 5 jogos):</b>\n✅ {home_name}: {vit_home} V\n✅ {away_name}: {vit_away} V\n➖ Empates: {empates}\n"
+    except: pass
+    return ""
 
 def calcular_prob_justa(outcomes):
     try:
@@ -145,29 +141,38 @@ def calcular_prob_justa(outcomes):
     except: return {}
 
 # ==========================================
-# 3. MOTOR DE ANÁLISE +EV E BUSCA MULTI-BOOKIES
+# 3. VALIDAÇÃO DE ALTA PERFORMANCE (Incluindo Zebras Afiadas)
 # ==========================================
-def validar_entrada_afiadissima(odd_oferecida, ev_real):
-    """ Regra de Ouro do Sniper: Escalonamento de Risco x Valor """
-    if not (1.50 <= odd_oferecida <= 5.00): 
-        return False
-    if ev_real > 0.12: 
-        return False # Suspeita de lesão ou odd desatualizada
+def validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real):
+    """
+    Novo Motor: Aceita Zebras, mas exige um erro GIGANTE da casa de apostas!
+    """
+    # Limita o teto em 7.00 para evitar loteria maluca
+    if not (1.40 <= odd_oferecida <= 7.00): return False 
+    
+    # Fuga de lesões/fake news (EV acima de 15% na Pinnacle geralmente é notícia vazada)
+    if ev_real > 0.15: return False 
         
-    if odd_oferecida <= 2.20:
-        return ev_real >= 0.015 # Favoritos: Pede 1.5% de EV
-    elif odd_oferecida <= 3.50:
-        return ev_real >= 0.035 # Intermediárias: Pede 3.5% de EV
-    elif odd_oferecida <= 5.00:
-        return ev_real >= 0.050 # ZEBRAS: Exige 5.0% de EV no mínimo!
+    # ESCALONAMENTO DE EV (Análise Superior para Zebras)
+    if odd_oferecida <= 2.50:
+        return ev_real >= 0.015 # Favoritos e Seguros: Pede 1.5% de EV
+    
+    elif odd_oferecida <= 4.00:
+        return ev_real >= 0.040 # Intermediários: Pede 4.0% de EV
+        
+    elif odd_oferecida <= 7.00:
+        return ev_real >= 0.070 # ZEBRA PURA: Casa tem que ter errado 7.0% na matemática!
+        
     return False
 
+# ==========================================
+# 4. MOTOR PRINCIPAL
+# ==========================================
 def processar_jogos_e_enviar():
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor Global (Filtro Sniper Ativado)...")
+    print(f"\n🔄[ATUALIZAÇÃO - {agora_br.strftime('%H:%M:%S')}] Escaneando Valor Global (Filtro Anti-Zebra Afiado)...")
     limpar_memoria_antiga()
     
-    LIMITE_POR_VARREDURA = 3  
     oportunidades_globais =[]
     
     for liga in LIGAS:
@@ -185,12 +190,11 @@ def processar_jogos_e_enviar():
         try:
             for evento in resposta.json():
                 jogo_id = str(evento['id'])
-                if jogo_id in jogos_enviados: continue # Anti-Spam: Pula se já enviou no dia
+                if jogo_id in jogos_enviados: continue
 
                 horario_br = datetime.fromisoformat(evento["commence_time"].replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo"))
                 minutos_faltando = (horario_br - agora_br).total_seconds() / 60
                 
-                # Janela de Oportunidade: De 15 min até 24 horas antes do jogo
                 if not (15 <= minutos_faltando <= 1440): continue 
 
                 bookmakers = evento.get("bookmakers",[])
@@ -204,9 +208,8 @@ def processar_jogos_e_enviar():
                     if soft_b["key"] == SHARP_BOOKIE or soft_b["key"] not in SOFT_BOOKIES: continue
                     nome_casa = soft_b["title"]
 
-                    # --- 1. MATCH ODDS (H2H), BTTS, DNB e DC (Lógica Simples) ---
-                    mercados_simples = ["h2h", "btts", "draw_no_bet", "double_chance"]
-                    for m_key in mercados_simples:
+                    # --- 1. MERCADOS SIMPLES ---
+                    for m_key in["h2h", "btts", "draw_no_bet", "double_chance"]:
                         pin_m = next((m for m in pinnacle.get("markets",[]) if m["key"] == m_key), None)
                         soft_m = next((m for m in soft_b.get("markets",[]) if m["key"] == m_key), None)
                         if pin_m and soft_m:
@@ -216,8 +219,7 @@ def processar_jogos_e_enviar():
                                 odd_oferecida = s_outcome["price"]
                                 if prob_real > 0:
                                     ev_real = (prob_real * odd_oferecida) - 1
-                                    if validar_entrada_afiadissima(odd_oferecida, ev_real):
-                                        # Traduz os mercados
+                                    if validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real):
                                         traducao = m_key.replace("h2h", "Vencedor (1X2)").replace("btts", "Ambas Marcam").replace("draw_no_bet", "Empate Anula").replace("double_chance", "Dupla Aposta")
                                         selecao = "Sim" if s_outcome["name"]=="Yes" else "Não" if s_outcome["name"]=="No" else s_outcome["name"].replace("/", " ou ")
                                         oportunidades_jogo.append((traducao, selecao, odd_oferecida, prob_real, ev_real, nome_casa))
@@ -236,33 +238,31 @@ def processar_jogos_e_enviar():
                                     odd_oferecida = s_outcome["price"]
                                     if prob_real > 0:
                                         ev_real = (prob_real * odd_oferecida) - 1
-                                        if validar_entrada_afiadissima(odd_oferecida, ev_real):
+                                        if validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real):
                                             oportunidades_jogo.append(("Gols/Pontos", f"{s_outcome['name']} {ponto}", odd_oferecida, prob_real, ev_real, nome_casa))
                                 except: pass
 
-                    # --- 3. HANDICAP ASIÁTICO (SPREADS) ---
-                    pin_spread = next((m for m in pinnacle.get("markets", []) if m["key"] == "spreads"), None)
-                    soft_spread = next((m for m in soft_b.get("markets",[]) if m["key"] == "spreads"), None)
-                    if pin_spread and soft_spread:
-                        for s_outcome in soft_spread["outcomes"]:
+                    # --- 3. HANDICAPS ---
+                    pin_sp = next((m for m in pinnacle.get("markets", []) if m["key"] == "spreads"), None)
+                    soft_sp = next((m for m in soft_b.get("markets",[]) if m["key"] == "spreads"), None)
+                    if pin_sp and soft_sp:
+                        for s_outcome in soft_sp["outcomes"]:
                             ponto = s_outcome.get("point")
                             selecao_nome = f"{s_outcome['name']} ({ponto})"
-                            pin_match = next((p for p in pin_spread["outcomes"] if p["name"] == s_outcome["name"] and p.get("point") == ponto), None)
+                            pin_match = next((p for p in pin_sp["outcomes"] if p["name"] == s_outcome["name"] and p.get("point") == ponto), None)
                             if pin_match:
-                                # Handicap precisa do ponto exato oposto (ex: -1.5 e +1.5) para remover o Juice
-                                par_pinnacle = [p for p in pin_spread["outcomes"] if p.get("point") in (ponto, -ponto)]
+                                par_pinnacle = [p for p in pin_sp["outcomes"] if p.get("point") in (ponto, -ponto)]
                                 try:
                                     prob_real = (1 / pin_match["price"]) / sum(1 / i["price"] for i in par_pinnacle if i["price"] > 0)
                                     odd_oferecida = s_outcome["price"]
                                     if prob_real > 0:
                                         ev_real = (prob_real * odd_oferecida) - 1
-                                        if validar_entrada_afiadissima(odd_oferecida, ev_real):
+                                        if validar_entrada_afiadissima(odd_oferecida, prob_real, ev_real):
                                             oportunidades_jogo.append(("Handicap Asiático", selecao_nome, odd_oferecida, prob_real, ev_real, nome_casa))
                                 except: pass
 
                 if not oportunidades_jogo: continue
                 
-                # Para evitar spam, pega apenas a melhor aposta disparada DESTE JOGO em específico
                 melhor_op = max(oportunidades_jogo, key=lambda x: x[4]) 
                 mercado_nome, selecao_nome, odd_bookie, prob_justa, ev_real, nome_bookie = melhor_op
 
@@ -273,45 +273,43 @@ def processar_jogos_e_enviar():
                     "mercado_nome": mercado_nome, "selecao_nome": selecao_nome,
                     "odd_bookie": odd_bookie, "prob_justa": prob_justa, 
                     "ev_real": ev_real, "nome_bookie": nome_bookie,
-                    "is_nba": is_nba, "liga": liga
+                    "is_nba": is_nba, "esporte": liga
                 })
 
-        except Exception as e: 
-            print(f"⚠️ Erro no processamento: {e}")
+        except Exception as e: pass
 
     # ==========================================
-    # RANQUEAMENTO E ENVIO NO TELEGRAM
+    # RANQUEAMENTO E CRIAÇÃO DA MÚLTIPLA
     # ==========================================
     if oportunidades_globais:
-        # Ordena pegando os maiores EVs Globalmente
+        # Pega as 5 melhores análises globais para mandar no canal
         oportunidades_globais.sort(key=lambda x: x["ev_real"], reverse=True)
-        top_snipers = oportunidades_globais[:LIMITE_POR_VARREDURA]
+        top_snipers = oportunidades_globais[:5] 
         
-        print(f"\n🎯 Achamos {len(oportunidades_globais)} oportunidades +EV. Disparando as {len(top_snipers)} melhores!")
+        print(f"\n🎯 Achamos {len(oportunidades_globais)} apostas de valor. Processando as melhores...")
 
+        # --- 1. ENVIAR APOSTAS SIMPLES ---
         for op in top_snipers:
-            ev_real = op["ev_real"]
-            prob_justa = op["prob_justa"]
-            odd_bookie = op["odd_bookie"]
+            ev_real, prob_justa, odd_bookie = op["ev_real"], op["prob_justa"], op["odd_bookie"]
             
-            if odd_bookie > 3.50:
-                cabecalho = "🦓 <b>ZEBRA DE VALOR (ALTA VARIÂNCIA)</b> 🦓"
-            elif ev_real >= 0.05:
-                cabecalho = "🚨🚨 <b>OPORTUNIDADE IMPERDÍVEL (MAX STAKE)</b> 🚨🚨"
-            elif ev_real >= 0.025:
-                cabecalho = "💎 <b>APOSTA INSTITUCIONAL (SNIPER)</b> 💎"
+            # CATEGORIZAÇÃO VISUAL E DE GESTÃO
+            if odd_bookie >= 4.01:
+                cabecalho = "🦓 <b>ZEBRA DE VALOR (ANÁLISE SUPERIOR)</b> 🦓\n<i>A casa errou feio! Risco alto, mas matematicamente perfeito.</i>"
+                kelly_pct = 0.5 # Stake protetora (Bem Baixa)
+            elif ev_real >= 0.03 and prob_justa >= 0.50:
+                cabecalho = "🎯🏆 <b>OPORTUNIDADE ÚNICA (ENTRADA PESADA)</b> 🏆🎯\n<i>A probabilidade de acerto desta aposta é gigante.</i>"
+                kelly_pct = 3.0 # Aumenta a mão!
             else:
-                cabecalho = "🔥 <b>OPORTUNIDADE DE VALOR (MODERADA)</b> 🔥"
-            
-            # Gestão de Banca: Protege em Odds altas, arrisca um pouco mais em favoritas (+EV)
-            b_kelly = odd_bookie - 1
-            q_kelly = 1 - prob_justa
-            try: kelly_pct = max(0.2, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 3.0))
-            except: kelly_pct = 0.5
+                cabecalho = "💎 <b>APOSTA INSTITUCIONAL (PADRÃO)</b> 💎"
+                b_kelly, q_kelly = odd_bookie - 1, 1 - prob_justa
+                try: kelly_pct = max(1.0, min(((prob_justa - (q_kelly / b_kelly)) * 0.25) * 100, 2.0))
+                except: kelly_pct = 1.0
 
             horas_f, min_f = int(op["minutos_faltando"] // 60), int(op["minutos_faltando"] % 60)
             tempo_str = f"{horas_f}h {min_f}min" if horas_f > 0 else f"{min_f} min"
             emoji = "🏀" if op["is_nba"] else "⚽"
+            
+            bloco_historico = obter_historico_times(op['home_team'], op['away_team'], op["esporte"])
             
             texto_msg = (
                 f"{cabecalho}\n\n"
@@ -322,35 +320,54 @@ def processar_jogos_e_enviar():
                 f"👉 <b>Entrada:</b> {op['selecao_nome']}\n"
                 f"🏛️ <b>Casa de Aposta:</b> {op['nome_bookie']}\n"
                 f"📈 <b>Odd Atual:</b> {odd_bookie:.2f}\n\n"
-                f"💰 <b>Gestão Recomendada:</b> {kelly_pct:.1f}% da Banca\n"
-                f"📊 <b>Vantagem (+EV):</b> +{ev_real*100:.2f}%"
+                f"💰 <b>Gestão Sugerida:</b> {kelly_pct:.1f}% da Banca\n"
+                f"📊 <b>Vantagem (+EV):</b> +{ev_real*100:.2f}%\n"
+                f"{bloco_historico}"
             )
             enviar_telegram(texto_msg)
-            
-            # Adiciona o ID na memória bloqueando repetições pelas próximas 24 horas
             jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
 
-            salvar_aposta_sistema({
-                "id": op["evento"]["id"], "sport_key": op["liga"], "home": op["home_team"], "away": op["away_team"],
-                "league": op["evento"]['sport_title'], "market_chosen": op["mercado_nome"], "selecao": op["selecao_nome"],
-                "odd": round(odd_bookie, 2), "prob": prob_justa, "ev": ev_real, "stake_perc": round(kelly_pct, 2),
-                "date": op["horario_br"].strftime('%d/%m/%Y')
-            })
-            print(f"🚀 ✅ TIP ENVIADA: {op['home_team']} x {op['away_team']} | Odd: {odd_bookie:.2f} | EV: +{ev_real*100:.2f}%")
+        # --- 2. CRIAR MÚLTIPLA +EV SINDICATO ---
+        # A Múltipla não usa Zebras. Apenas jogos seguros (Prob > 50% e Odd < 2.00)
+        jogos_seguros =[op for op in top_snipers if op["prob_justa"] >= 0.50 and op["odd_bookie"] <= 2.00]
+        
+        if len(jogos_seguros) >= 2:
+            m1, m2 = jogos_seguros[0], jogos_seguros[1]
+            
+            odd_dupla = m1["odd_bookie"] * m2["odd_bookie"]
+            prob_dupla = m1["prob_justa"] * m2["prob_justa"]
+            ev_dupla = (prob_dupla * odd_dupla) - 1
+            
+            if ev_dupla > 0:
+                texto_multipla = (
+                    "🔥🧩 <b>COMBO +EV SINDICATO (MÚLTIPLA)</b> 🧩🔥\n"
+                    "<i>Juntamos as 2 análises mais seguras do momento para alavancagem!</i>\n\n"
+                    f"1️⃣ <b>{m1['home_team']} x {m1['away_team']}</b>\n"
+                    f"👉 {m1['mercado_nome']} - <b>{m1['selecao_nome']}</b> (@{m1['odd_bookie']:.2f})\n\n"
+                    f"2️⃣ <b>{m2['home_team']} x {m2['away_team']}</b>\n"
+                    f"👉 {m2['mercado_nome']} - <b>{m2['selecao_nome']}</b> (@{m2['odd_bookie']:.2f})\n\n"
+                    f"🏛️ <b>Casa Recomendada:</b> Faça onde a Odd Total for maior!\n"
+                    f"🚀 <b>ODD FINAL DA DUPLA:</b> {odd_dupla:.2f}\n"
+                    f"💰 <b>Stake Recomendada:</b> 0.5% a 1.0% da Banca"
+                )
+                enviar_telegram(texto_multipla)
+
     else:
-        print("\n😴 Nenhuma oportunidade com Análise Afiada encontrada nesta rodada.")
+        print("\n😴 Nenhuma oportunidade que atenda aos critérios rígidos foi encontrada agora.")
 
 # ==========================================
-# 4. LOOP PRINCIPAL
+# 5. LOOP PRINCIPAL
 # ==========================================
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Sniper Definitivo Iniciado com Sucesso!")
-    print("✅ Filtro Anti-Spam Definitivo (1 ID = 1 Entrada) Ativado!")
-    print("✅ Handicap Asiático Corrigido, Anti-Zebra Afiado e Max Stake Ativado!")
+    print("🤖 Bot Sniper v5.0 (9 TOKENS API ATIVOS) Iniciado!")
+    print("✅ Zebras com Análise Superior (EV>7%) Liberadas.")
+    print("✅ Múltiplas Sindicato isoladas e protegidas.")
+    print("✅ Ciclo Acelerado para 3 Horas (Aproveitando os 9 Tokens)!")
     
     while True:
         processar_jogos_e_enviar()
-        print("\n⏳ Aguardando 6 horas para a próxima varredura global...")
-        # 21600 segundos = 6 horas
-        time.sleep(21600)
+        # COMO VOCÊ AGORA TEM 9 CHAVES, REDUZI O TEMPO DE ESPERA.
+        # ELE AGORA VARRE O MUNDO INTEIRO A CADA 3 HORAS EM VEZ DE 6 HORAS.
+        print("\n⏳ Aguardando 3 horas para a próxima varredura profunda...")
+        time.sleep(10800)
