@@ -40,7 +40,7 @@ def obter_resultados_api(esporte):
         if res.status_code == 200:
             return res.json()
     except: pass
-    return[]
+    return []
 
 def resolver_aposta(aposta, placar):
     mercado = aposta['mercado']
@@ -51,32 +51,71 @@ def resolver_aposta(aposta, placar):
     scores = placar.get("scores",[])
     if not scores or len(scores) < 2: return "PENDENTE", 0
     
-    home_score = int(scores[0]["score"])
-    away_score = int(scores[1]["score"])
+    # Identifica corretamente quem é casa e visitante na API
+    home_team_name = placar["home_team"]
+    away_team_name = placar["away_team"]
+    
+    home_score = 0
+    away_score = 0
+    for s in scores:
+        if s["name"] == home_team_name: home_score = int(s["score"])
+        elif s["name"] == away_team_name: away_score = int(s["score"])
+
     total_gols = home_score + away_score
 
     status = "RED"
     lucro = -stake 
     
+    # --- 1. MERCADO: VENCEDOR (1X2) ---
     if mercado == "Vencedor (1X2)":
         if "Empate" in selecao and home_score == away_score: status = "GREEN"
-        elif placar["home_team"] in selecao and home_score > away_score: status = "GREEN"
-        elif placar["away_team"] in selecao and away_score > home_score: status = "GREEN"
+        elif home_team_name[:5] in selecao and home_score > away_score: status = "GREEN"
+        elif away_team_name[:5] in selecao and away_score > home_score: status = "GREEN"
 
+    # --- 2. MERCADO: AMBAS MARCAM (BTTS) ---
     elif mercado == "Ambas Marcam":
         if selecao == "Sim" and home_score > 0 and away_score > 0: status = "GREEN"
         elif selecao == "Não" and (home_score == 0 or away_score == 0): status = "GREEN"
 
-    elif "Gols/Pontos" in mercado:
+    # --- 3. MERCADO: HANDICAP ASIÁTICO / SPREADS ---
+    elif "Handicap" in mercado:
         try:
-            linha = float(selecao.split(" ")[1])
-            if "Over" in selecao and total_gols > linha: status = "GREEN"
-            elif "Under" in selecao and total_gols < linha: status = "GREEN"
+            # Exemplo de seleção: "Flamengo (-1.5)" ou "Man City (+1.0)"
+            linha_str = selecao.split("(")[-1].replace(")", "")
+            linha = float(linha_str)
+            time_selecao = selecao.split("(")[0].strip()
+
+            # Descobre se apostou no time da casa ou visitante (Saldo = Gols a Favor - Gols Contra)
+            if home_team_name[:5] in time_selecao:
+                saldo = home_score - away_score
+            else:
+                saldo = away_score - home_score
+
+            # Calcula o resultado final somando o handicap da casa de aposta
+            resultado_final = saldo + linha
+
+            if resultado_final > 0: status = "GREEN"
+            elif resultado_final == 0: status = "REEMBOLSO"  # Bateu exatamente na linha (VOID)
         except: pass
 
+    # --- 4. MERCADO: TOTAL DE GOLS (OVER/UNDER) ---
+    elif "Gols" in mercado or "Pontos" in mercado or "Over" in mercado or "Under" in mercado:
+        try:
+            linha = float(selecao.split(" ")[-1]) # Exemplo: Extrai o 2.5 de "Over 2.5"
+            if "Over" in selecao:
+                if total_gols > linha: status = "GREEN"
+                elif total_gols == linha: status = "REEMBOLSO"
+            elif "Under" in selecao:
+                if total_gols < linha: status = "GREEN"
+                elif total_gols == linha: status = "REEMBOLSO"
+        except: pass
+
+    # --- CÁLCULO FINAL DE LUCRO ---
     if status == "GREEN":
         lucro = (stake * odd) - stake
-        
+    elif status == "REEMBOLSO":
+        lucro = 0  # Dinheiro devolvido, 0 prejuízo, 0 lucro
+
     return status, lucro
 
 def rotina_fechamento_diario():
@@ -122,6 +161,7 @@ def rotina_fechamento_diario():
     else:
         print("🔍 Nenhuma aposta pendente no momento.")
 
+    # --- GERAÇÃO DO DASHBOARD DO DIA ---
     ontem = (agora - timedelta(days=1)).strftime('%d/%m/%Y')
     cursor.execute("SELECT status, lucro, stake FROM operacoes_tipster WHERE data_hora = ? AND status != 'PENDENTE'", (ontem,))
     operacoes_ontem = cursor.fetchall()
@@ -129,9 +169,12 @@ def rotina_fechamento_diario():
     if operacoes_ontem:
         total_greens = sum(1 for op in operacoes_ontem if op["status"] == "GREEN")
         total_reds = sum(1 for op in operacoes_ontem if op["status"] == "RED")
-        total_apostas = total_greens + total_reds
+        total_reembolsos = sum(1 for op in operacoes_ontem if op["status"] == "REEMBOLSO")
         
-        win_rate = (total_greens / total_apostas) * 100 if total_apostas > 0 else 0
+        total_apostas = len(operacoes_ontem)
+        apostas_validas = total_greens + total_reds  # Reembolso não entra no cálculo de taxa de acerto!
+        
+        win_rate = (total_greens / apostas_validas) * 100 if apostas_validas > 0 else 0
         lucro_total = sum(op["lucro"] for op in operacoes_ontem)
         unidades_investidas = sum(op["stake"] for op in operacoes_ontem)
         roi = (lucro_total / unidades_investidas) * 100 if unidades_investidas > 0 else 0
@@ -142,13 +185,14 @@ def rotina_fechamento_diario():
         dashboard_msg = (
             f"📊 <b>FECHAMENTO DE CAIXA ({ontem})</b> 📊\n"
             f"<i>Auditoria automatizada do Sindicato.</i>\n\n"
-            f"📈 <b>Apostas Finalizadas:</b> {total_apostas}\n"
+            f"📈 <b>Sinais Emitidos:</b> {total_apostas}\n"
             f"✅ <b>Greens:</b> {total_greens}\n"
             f"❌ <b>Reds:</b> {total_reds}\n"
-            f"🎯 <b>Assertividade (Win-Rate):</b> {win_rate:.1f}%\n\n"
+            f"🔄 <b>Devolvidas (Void):</b> {total_reembolsos}\n"
+            f"🎯 <b>Assertividade:</b> {win_rate:.1f}%\n\n"
             f"💵 <b>Investimento Total:</b> {unidades_investidas:.2f} Unidades\n"
             f"{emoji_lucro} <b>Resultado Líquido:</b> {sinal_lucro}{lucro_total:.2f} Unidades\n"
-            f"📈 <b>ROI:</b> {sinal_lucro}{roi:.2f}%\n"
+            f"📈 <b>ROI do Dia:</b> {sinal_lucro}{roi:.2f}%\n"
         )
         enviar_telegram(dashboard_msg)
         print("📲 Dashboard enviado para o Telegram!")
