@@ -3,6 +3,8 @@ import aiohttp
 import time
 import json
 import sqlite3
+import unicodedata
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -27,7 +29,7 @@ DB_FILE = "probum.db"
 
 SOFT_BOOKIES =["bet365", "betano", "1xbet", "draftkings", "williamhill", "unibet", "888sport", "betfair_ex_eu"]
 SHARP_BOOKIE = "pinnacle"
-TODAS_CASAS = SOFT_BOOKIES +[SHARP_BOOKIE]
+TODAS_CASAS = SOFT_BOOKIES + [SHARP_BOOKIE]
 
 LIGAS =[
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",              
@@ -47,6 +49,9 @@ api_lock = asyncio.Lock()
 oportunidades_globais =[]
 surebets_globais =[]
 
+# ==========================================
+# 2. FUNÇÕES DE BANCO E TELEGRAM
+# ==========================================
 def inicializar_banco():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -99,10 +104,38 @@ async def fazer_requisicao_odds(session, url, parametros):
         except Exception: pass
     return None
 
+# ==========================================
+# 3. VALIDAÇÕES E INTELIGÊNCIA ARTIFICIAL
+# ==========================================
+
+# NORMALIZADOR DE NOMES (Evita que o Bot ignore a UEFA por causa de nomes diferentes nas casas)
+def normalizar_nome(nome):
+    if not isinstance(nome, str): return str(nome)
+    # Remove acentos e caracteres especiais
+    nome = ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn').lower().strip()
+    
+    # Remove sufixos que atrapalham o cruzamento das casas
+    sufixos =[" fc", " cf", " cd", " sc", " cp", " fk", " nk", " u21", " u20", " u19"]
+    for suf in sufixos:
+        if nome.endswith(suf):
+            nome = nome[:-len(suf)].strip()
+            
+    # Ajustes rápidos de times famosos
+    if "manchester city" in nome: return "man city"
+    if "manchester united" in nome: return "man utd"
+    
+    mapa = {
+        "bayern munich": "bayern", "bayern munchen": "bayern",
+        "paris saint germain": "psg", "paris sg": "psg",
+        "internazionale": "inter", "inter milan": "inter", "ac milan": "milan"
+    }
+    return mapa.get(nome, nome)
+
 def calcular_prob_justa(outcomes):
     try:
         margem = sum(1 / item["price"] for item in outcomes if item["price"] > 0)
-        return {item["name"]: (1 / item["price"]) / margem for item in outcomes if item["price"] > 0}
+        # Usa o normalizador para gravar as chaves corretamente
+        return {normalizar_nome(item["name"]): (1 / item["price"]) / margem for item in outcomes if item["price"] > 0}
     except: return {}
 
 def treinar_inteligencia_artificial():
@@ -151,9 +184,13 @@ def validar_com_ia(odd_oferecida, prob_real, ev_real, liga, liga_titulo, mercado
 
     return ev_real >= ev_exigido
 
+# ==========================================
+# 4. MOTOR DE BUSCA (VARREDURA)
+# ==========================================
 async def processar_liga_async(session, liga, agora_br):
     is_nba = "basketball" in liga
-    mercados_alvo = "h2h,spreads" if is_nba else "h2h,btts"
+    # CORREÇÃO: Agora o Futebol busca spreads (Handicap) também!
+    mercados_alvo = "h2h,spreads" if is_nba else "h2h,btts,spreads"
     casas_busca = ",".join(TODAS_CASAS)
     
     parametros = {"regions": "eu", "markets": mercados_alvo, "bookmakers": casas_busca}
@@ -176,7 +213,7 @@ async def processar_liga_async(session, liga, agora_br):
             if not pinnacle: continue 
 
             dropping_alerts = {}
-            for m in pinnacle.get("markets",[]):
+            for m in pinnacle.get("markets", []):
                 for out in m["outcomes"]:
                     chave_hist = f"{jogo_id}_{m['key']}_{out['name']}_{out.get('point','')}"
                     preco_atual = out["price"]
@@ -191,13 +228,15 @@ async def processar_liga_async(session, liga, agora_br):
                 if soft_b["key"] == SHARP_BOOKIE or soft_b["key"] not in SOFT_BOOKIES: continue
                 nome_casa = soft_b["title"]
 
-                for m_key in["h2h", "btts"]:
-                    pin_m = next((m for m in pinnacle.get("markets",[]) if m["key"] == m_key), None)
+                for m_key in ["h2h", "btts"]:
+                    pin_m = next((m for m in pinnacle.get("markets", []) if m["key"] == m_key), None)
                     soft_m = next((m for m in soft_b.get("markets",[]) if m["key"] == m_key), None)
                     if pin_m and soft_m:
                         probs_justas = calcular_prob_justa(pin_m["outcomes"])
                         for s_outcome in soft_m["outcomes"]:
-                            prob_real = probs_justas.get(s_outcome["name"], 0)
+                            # Usa o nome normalizado para encontrar o time corretamente!
+                            nome_norm = normalizar_nome(s_outcome["name"])
+                            prob_real = probs_justas.get(nome_norm, 0)
                             odd_oferecida = s_outcome["price"]
                             if prob_real > 0:
                                 ev_real = (prob_real * odd_oferecida) - 1
@@ -208,16 +247,18 @@ async def processar_liga_async(session, liga, agora_br):
                                     selecao = "Sim" if s_outcome["name"]=="Yes" else "Não" if s_outcome["name"]=="No" else s_outcome["name"].replace("/", " ou ")
                                     oportunidades_jogo.append((traducao, selecao, odd_oferecida, prob_real, ev_real, nome_casa, is_dropping))
 
-                for m_key in["spreads"]:
-                    pin_m = next((m for m in pinnacle.get("markets",[]) if m["key"] == m_key), None)
-                    soft_m = next((m for m in soft_b.get("markets",[]) if m["key"] == m_key), None)
+                for m_key in ["spreads"]:
+                    pin_m = next((m for m in pinnacle.get("markets", []) if m["key"] == m_key), None)
+                    soft_m = next((m for m in soft_b.get("markets", []) if m["key"] == m_key), None)
                     if pin_m and soft_m:
                         for s_outcome in soft_m["outcomes"]:
                             ponto = s_outcome.get("point")
-                            pin_match = next((p for p in pin_m["outcomes"] if p["name"] == s_outcome["name"] and p.get("point") == ponto), None)
+                            nome_s_norm = normalizar_nome(s_outcome["name"])
+                            
+                            pin_match = next((p for p in pin_m["outcomes"] if normalizar_nome(p["name"]) == nome_s_norm and p.get("point") == ponto), None)
                             if pin_match and (1.50 <= pin_match["price"] <= 2.50):
-                                par_pinnacle =[p for p in pin_m["outcomes"] if p.get("point") in (ponto, -ponto)]
-                                nome_mercado, selecao_nome = "Handicap Asiático", f"{s_outcome['name']} ({ponto})"
+                                par_pinnacle = [p for p in pin_m["outcomes"] if p.get("point") in (ponto, -ponto)]
+                                nome_mercado, selecao_nome = "Handicap Asiático" if not is_nba else "Handicap (Spread)", f"{s_outcome['name']} ({ponto})"
                                 try:
                                     prob_real = (1 / pin_match["price"]) / sum(1 / i["price"] for i in par_pinnacle if i["price"] > 0)
                                     odd_oferecida = s_outcome["price"]
@@ -241,6 +282,9 @@ async def processar_liga_async(session, liga, agora_br):
                 })
     except Exception as e: pass
 
+# ==========================================
+# 5. GERENCIADOR DE ENVIO (TOP 5 E MÚLTIPLAS)
+# ==========================================
 async def gerenciar_varreduras_e_enviar():
     global jogos_enviados, historico_pinnacle
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -248,8 +292,8 @@ async def gerenciar_varreduras_e_enviar():
     treinar_inteligencia_artificial()
     print(f"\n🔄[VARREDURA GERAL - {agora_br.strftime('%H:%M:%S')}] Buscando e filtrando os melhores jogos...")
         
-    jogos_enviados ={k: v for k, v in jogos_enviados.items() if agora_br <= v}
-    historico_pinnacle ={k: v for k, v in historico_pinnacle.items() if agora_br <= v["expires"]}
+    jogos_enviados = {k: v for k, v in jogos_enviados.items() if agora_br <= v}
+    historico_pinnacle = {k: v for k, v in historico_pinnacle.items() if agora_br <= v["expires"]}
     oportunidades_globais.clear()
     
     async with aiohttp.ClientSession() as session:
@@ -261,11 +305,11 @@ async def gerenciar_varreduras_e_enviar():
             # =================================================================
             # PASSO 1: CRIAR O BILHETE DE MÚLTIPLA SE TIVER JOGOS BONS
             # =================================================================
-            candidatas_multipla = [op for op in oportunidades_globais if op["odd_bookie"] <= 1.70 and op["prob_justa"] >= 0.60]
+            candidatas_multipla =[op for op in oportunidades_globais if op["odd_bookie"] <= 1.70 and op["prob_justa"] >= 0.60]
             jogos_multipla_ids =[]
             
             if len(candidatas_multipla) >= 2:
-                # Pega os 2 ou 3 jogos mais SEGUROS para montar o bilhete
+                # Na múltipla, ordenar por probabilidade de acerto é o correto
                 candidatas_multipla.sort(key=lambda x: x["prob_justa"], reverse=True)
                 jogos_multipla = candidatas_multipla[:3]
                 jogos_multipla_ids = [op["jogo_id"] for op in jogos_multipla]
@@ -285,7 +329,6 @@ async def gerenciar_varreduras_e_enviar():
                 
                 await enviar_telegram_async(session, texto_multipla)
                 
-                # Registra as apostas da múltipla para não enviar como single
                 for op in jogos_multipla:
                     jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
                     salvar_aposta_banco(op, 0.5)
@@ -295,8 +338,9 @@ async def gerenciar_varreduras_e_enviar():
             # =================================================================
             singles = [op for op in oportunidades_globais if op["jogo_id"] not in jogos_multipla_ids]
             
-            # Ordena pela MAIOR PROBABILIDADE de Green primeiro
-            singles.sort(key=lambda x: x["prob_justa"], reverse=True)
+            # CORREÇÃO: Agora ordena pelo Maior Valor (+EV) em vez da probabilidade!
+            # Impede o bot de enviar só NBA pagando 1.15 e permite que o Futebol lucrativo assuma as vagas
+            singles.sort(key=lambda x: x["ev_real"], reverse=True)
             
             # Corta a lista: Fica apenas com os 5 melhores
             top_singles = singles[:5]
@@ -359,6 +403,6 @@ async def loop_infinito():
 
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Sindicato ASIÁTICO v10.0 INICIADO!")
-    print("🎯 MODO: Funil (Top 5 Probabilidade) + Gerador de Múltiplas Integrado!")
+    print("🤖 Bot Sindicato ASIÁTICO v10.1 (UPDATE) INICIADO!")
+    print("🎯 MODO: Diversificado (Todas as Ligas) + Evitando Falsos Positivos de Nomes + Busca em Handicaps!")
     asyncio.run(loop_infinito())
