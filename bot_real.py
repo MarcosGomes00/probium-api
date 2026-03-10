@@ -29,7 +29,7 @@ DB_FILE = "probum.db"
 
 SOFT_BOOKIES =["bet365", "betano", "1xbet", "draftkings", "williamhill", "unibet", "888sport", "betfair_ex_eu"]
 SHARP_BOOKIE = "pinnacle"
-TODAS_CASAS = SOFT_BOOKIES + [SHARP_BOOKIE]
+TODAS_CASAS = SOFT_BOOKIES +[SHARP_BOOKIE]
 
 LIGAS =[
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",              
@@ -47,7 +47,6 @@ chave_odds_atual = 0
 api_lock = asyncio.Lock()
 
 oportunidades_globais =[]
-surebets_globais =[]
 
 # ==========================================
 # 2. FUNÇÕES DE BANCO E TELEGRAM
@@ -107,20 +106,14 @@ async def fazer_requisicao_odds(session, url, parametros):
 # ==========================================
 # 3. VALIDAÇÕES E INTELIGÊNCIA ARTIFICIAL
 # ==========================================
-
-# NORMALIZADOR DE NOMES (Evita que o Bot ignore a UEFA por causa de nomes diferentes nas casas)
 def normalizar_nome(nome):
     if not isinstance(nome, str): return str(nome)
-    # Remove acentos e caracteres especiais
     nome = ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn').lower().strip()
-    
-    # Remove sufixos que atrapalham o cruzamento das casas
     sufixos =[" fc", " cf", " cd", " sc", " cp", " fk", " nk", " u21", " u20", " u19"]
     for suf in sufixos:
         if nome.endswith(suf):
             nome = nome[:-len(suf)].strip()
             
-    # Ajustes rápidos de times famosos
     if "manchester city" in nome: return "man city"
     if "manchester united" in nome: return "man utd"
     
@@ -134,7 +127,6 @@ def normalizar_nome(nome):
 def calcular_prob_justa(outcomes):
     try:
         margem = sum(1 / item["price"] for item in outcomes if item["price"] > 0)
-        # Usa o normalizador para gravar as chaves corretamente
         return {normalizar_nome(item["name"]): (1 / item["price"]) / margem for item in outcomes if item["price"] > 0}
     except: return {}
 
@@ -158,13 +150,13 @@ def treinar_inteligencia_artificial():
             dados_agrupados[chave]["stake_total"] += stake
 
         for chave, dados in dados_agrupados.items():
-            if dados["apostas"] >= 5: 
+            # MELHORIA: Aumentado de 5 para 20 apostas mínimas para evitar ruidos de curto prazo (variância)
+            if dados["apostas"] >= 20: 
                 roi = (dados["lucro_total"] / dados["stake_total"]) * 100
                 memoria_ia[chave] = roi
     except: pass
 
 def validar_com_ia(odd_oferecida, prob_real, ev_real, liga, liga_titulo, mercado_nome):
-    """ FILTRO DE EV OTIMIZADO (Múltiplas, Snipers e Zebras) """
     if not (1.30 <= odd_oferecida <= 15.00): return False 
     if ev_real > 0.15: return False 
     
@@ -189,8 +181,8 @@ def validar_com_ia(odd_oferecida, prob_real, ev_real, liga, liga_titulo, mercado
 # ==========================================
 async def processar_liga_async(session, liga, agora_br):
     is_nba = "basketball" in liga
-    # CORREÇÃO: Agora o Futebol busca spreads (Handicap) também!
-    mercados_alvo = "h2h,spreads" if is_nba else "h2h,btts,spreads"
+    # MELHORIA: Adicionado mercado de 'totals' (Gols Over/Under) no futebol
+    mercados_alvo = "h2h,spreads,totals" if is_nba else "h2h,btts,spreads,totals"
     casas_busca = ",".join(TODAS_CASAS)
     
     parametros = {"regions": "eu", "markets": mercados_alvo, "bookmakers": casas_busca}
@@ -219,6 +211,7 @@ async def processar_liga_async(session, liga, agora_br):
                     preco_atual = out["price"]
                     if chave_hist in historico_pinnacle:
                         preco_antigo = historico_pinnacle[chave_hist]["price"]
+                        # MELHORIA: Como o ciclo agora é a cada 3h, uma queda de 6% representa um STEAM MOVE forte
                         if (preco_antigo - preco_atual) / preco_antigo >= 0.06:
                             dropping_alerts[chave_hist] = True
                     historico_pinnacle[chave_hist] = {"price": preco_atual, "expires": agora_br + timedelta(hours=24)}
@@ -228,13 +221,13 @@ async def processar_liga_async(session, liga, agora_br):
                 if soft_b["key"] == SHARP_BOOKIE or soft_b["key"] not in SOFT_BOOKIES: continue
                 nome_casa = soft_b["title"]
 
+                # 1. 1X2 e AMBAS MARCAM
                 for m_key in ["h2h", "btts"]:
                     pin_m = next((m for m in pinnacle.get("markets", []) if m["key"] == m_key), None)
                     soft_m = next((m for m in soft_b.get("markets",[]) if m["key"] == m_key), None)
                     if pin_m and soft_m:
                         probs_justas = calcular_prob_justa(pin_m["outcomes"])
                         for s_outcome in soft_m["outcomes"]:
-                            # Usa o nome normalizado para encontrar o time corretamente!
                             nome_norm = normalizar_nome(s_outcome["name"])
                             prob_real = probs_justas.get(nome_norm, 0)
                             odd_oferecida = s_outcome["price"]
@@ -247,7 +240,8 @@ async def processar_liga_async(session, liga, agora_br):
                                     selecao = "Sim" if s_outcome["name"]=="Yes" else "Não" if s_outcome["name"]=="No" else s_outcome["name"].replace("/", " ou ")
                                     oportunidades_jogo.append((traducao, selecao, odd_oferecida, prob_real, ev_real, nome_casa, is_dropping))
 
-                for m_key in ["spreads"]:
+                # 2. HANDICAPS (SPREADS) E GOLS (TOTALS)
+                for m_key in ["spreads", "totals"]:
                     pin_m = next((m for m in pinnacle.get("markets", []) if m["key"] == m_key), None)
                     soft_m = next((m for m in soft_b.get("markets", []) if m["key"] == m_key), None)
                     if pin_m and soft_m:
@@ -257,8 +251,16 @@ async def processar_liga_async(session, liga, agora_br):
                             
                             pin_match = next((p for p in pin_m["outcomes"] if normalizar_nome(p["name"]) == nome_s_norm and p.get("point") == ponto), None)
                             if pin_match and (1.50 <= pin_match["price"] <= 2.50):
-                                par_pinnacle = [p for p in pin_m["outcomes"] if p.get("point") in (ponto, -ponto)]
-                                nome_mercado, selecao_nome = "Handicap Asiático" if not is_nba else "Handicap (Spread)", f"{s_outcome['name']} ({ponto})"
+                                par_pinnacle =[p for p in pin_m["outcomes"] if p.get("point") in (ponto, -ponto) or (m_key == "totals" and p.get("point") == ponto)]
+                                
+                                # Define nome do mercado amigável
+                                if m_key == "spreads":
+                                    nome_mercado = "Handicap Asiático" if not is_nba else "Handicap (Spread)"
+                                    selecao_nome = f"{s_outcome['name']} ({ponto})"
+                                else:
+                                    nome_mercado = "Gols (Mais/Menos)" if not is_nba else "Pontos Totais"
+                                    selecao_nome = f"{s_outcome['name']} {ponto}" # Ex: Over 2.5
+
                                 try:
                                     prob_real = (1 / pin_match["price"]) / sum(1 / i["price"] for i in par_pinnacle if i["price"] > 0)
                                     odd_oferecida = s_outcome["price"]
@@ -302,14 +304,10 @@ async def gerenciar_varreduras_e_enviar():
 
         if oportunidades_globais:
             
-            # =================================================================
-            # PASSO 1: CRIAR O BILHETE DE MÚLTIPLA SE TIVER JOGOS BONS
-            # =================================================================
-            candidatas_multipla =[op for op in oportunidades_globais if op["odd_bookie"] <= 1.70 and op["prob_justa"] >= 0.60]
+            candidatas_multipla = [op for op in oportunidades_globais if op["odd_bookie"] <= 1.70 and op["prob_justa"] >= 0.60]
             jogos_multipla_ids =[]
             
             if len(candidatas_multipla) >= 2:
-                # Na múltipla, ordenar por probabilidade de acerto é o correto
                 candidatas_multipla.sort(key=lambda x: x["prob_justa"], reverse=True)
                 jogos_multipla = candidatas_multipla[:3]
                 jogos_multipla_ids = [op["jogo_id"] for op in jogos_multipla]
@@ -333,21 +331,10 @@ async def gerenciar_varreduras_e_enviar():
                     jogos_enviados[op["jogo_id"]] = datetime.now() + timedelta(hours=24)
                     salvar_aposta_banco(op, 0.5)
 
-            # =================================================================
-            # PASSO 2: FILTRAR SÓ OS 5 MELHORES SINGLES DO DIA (ANTI-SPAM)
-            # =================================================================
             singles = [op for op in oportunidades_globais if op["jogo_id"] not in jogos_multipla_ids]
-            
-            # CORREÇÃO: Agora ordena pelo Maior Valor (+EV) em vez da probabilidade!
-            # Impede o bot de enviar só NBA pagando 1.15 e permite que o Futebol lucrativo assuma as vagas
             singles.sort(key=lambda x: x["ev_real"], reverse=True)
-            
-            # Corta a lista: Fica apenas com os 5 melhores
             top_singles = singles[:5]
 
-            # =================================================================
-            # PASSO 3: ORDENAR OS 5 MELHORES POR HORÁRIO E ENVIAR COM AS TAGS
-            # =================================================================
             top_singles.sort(key=lambda x: x["horario_br"])
             
             for op in top_singles:
@@ -398,11 +385,14 @@ async def gerenciar_varreduras_e_enviar():
 async def loop_infinito():
     while True:
         await gerenciar_varreduras_e_enviar()
-        print("\n⏳ Bot dormindo por 5 horas (Modo Economia Mensal para 9 Chaves)...")
-        await asyncio.sleep(18000)
+        # MELHORIA: Tempo de sleep ajustado para 3 HORAS (10800 segundos).
+        # Você gasta apenas 120 requisições por dia (sobram 30 requests de margem de segurança)
+        # e pega derretimento de odds muito mais rápido que a configuração de 5 horas.
+        print("\n⏳ Bot dormindo por 3 horas (Varredura dinâmica ativada)...")
+        await asyncio.sleep(10800)
 
 if __name__ == "__main__":
     inicializar_banco()
-    print("🤖 Bot Sindicato ASIÁTICO v10.1 (UPDATE) INICIADO!")
-    print("🎯 MODO: Diversificado (Todas as Ligas) + Evitando Falsos Positivos de Nomes + Busca em Handicaps!")
+    print("🤖 Bot Sindicato ASIÁTICO v10.5 INICIADO!")
+    print("🎯 MODO: Dinâmico (Ciclo 3h) | Busca em Gols e Handicaps | IA Blindada contra ruídos!")
     asyncio.run(loop_infinito())
