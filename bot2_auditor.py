@@ -12,6 +12,20 @@ TELEGRAM_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
 CHAT_ID = "-1003814625223"
 DB_FILE = "probum.db"
 
+def inicializar_banco():
+    """ Garante que a tabela existe antes do Bot 2 tentar ler """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS operacoes_tipster (
+            id_aposta TEXT PRIMARY KEY, esporte TEXT, jogo TEXT, liga TEXT, 
+            mercado TEXT, selecao TEXT, odd REAL, prob REAL, ev REAL, stake REAL, 
+            status TEXT DEFAULT 'PENDENTE', lucro REAL DEFAULT 0, data_hora TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": texto, "parse_mode": "HTML"}
@@ -145,11 +159,15 @@ def rotina_fechamento_diario():
 
 if __name__ == "__main__":
     print("🤖 BOT 2 (AUDITOR) INICIADO!")
+    time.sleep(3) # Dá 3 segundos pro Bot 1 respirar e focar na varredura
+    inicializar_banco() # Garante que a tabela exista!
+    
     print("🔄 Executando a primeira checagem de teste agora mesmo...")
     rotina_fechamento_diario()
     
     while True:
         agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        # Roda o check real todos os dias às 08:00
         if agora.hour == 8 and agora.minute == 0:
             rotina_fechamento_diario()
             time.sleep(61)
