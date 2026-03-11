@@ -19,7 +19,7 @@ API_KEYS_ODDS =[
 TELEGRAM_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A" # Token Bot 1
 CHAT_ID = "-1003814625223"
 DB_FILE = "probum.db"
-SCAN_INTERVAL = 21600 # 6 Horas para economizar API ao máximo
+SCAN_INTERVAL = 21600 # 6 Horas para economizar API
 
 SOFT_BOOKIES =["bet365","betano","1xbet","draftkings","williamhill","unibet","888sport","betfair_ex_eu"]
 SHARP_BOOKIE = "pinnacle"
@@ -35,11 +35,14 @@ LEAGUE_TIERS = {
 
 LIGAS = list(LEAGUE_TIERS.keys())
 jogos_enviados = {}
+sgp_enviados = {} # Memória das múltiplas na mesma partida
 historico_pinnacle = {} 
 memoria_ia = {} 
 chave_odds_atual = 0 
 api_lock = asyncio.Lock()
+
 oportunidades_globais =[]
+sgp_globais =[] # Lista de Bet Builders
 
 # FUNÇÕES DE BANCO E IA
 def carregar_memoria_banco():
@@ -54,7 +57,6 @@ def carregar_memoria_banco():
     except: pass
 
 def checar_limite_diario():
-    """ Garante que não passe de 10 por dia juntando os 2 bots """
     try:
         conn = sqlite3.connect(DB_FILE, timeout=10)
         cursor = conn.cursor()
@@ -95,8 +97,9 @@ async def fazer_requisicao_odds(session, url, parametros):
         parametros["apiKey"] = chave_teste
         try:
             async with session.get(url, params=parametros, timeout=15) as resposta:
-                if resposta.status == 200: return await resposta.json()
-                elif resposta.status in [401, 429]:
+                if resposta.status == 200: 
+                    return await resposta.json()
+                elif resposta.status in[401, 429]:
                     async with api_lock: chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
                 else: return await resposta.json()
         except: pass
@@ -140,13 +143,13 @@ def validar_futebol(odd, ev, liga):
     return ev >= ev_exigido
 
 async def processar_liga_async(session, liga_key, agora_br):
-    parametros = {"regions": "eu", "markets": "h2h,btts", "bookmakers": ",".join(TODAS_CASAS)}
+    # Ampliamos para totals (Gols) para poder gerar os Bet Builders perfeitos
+    parametros = {"regions": "eu", "markets": "h2h,btts,totals", "bookmakers": ",".join(TODAS_CASAS)}
     data = await fazer_requisicao_odds(session, f"https://api.the-odds-api.com/v4/sports/{liga_key}/odds/", parametros)
     if not isinstance(data, list): return
 
     for evento in data:
         jogo_id = str(evento['id'])
-        if jogo_id in jogos_enviados: continue
         horario_br = datetime.fromisoformat(evento["commence_time"].replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo"))
         minutos = (horario_br - agora_br).total_seconds() / 60
         if not (15 <= minutos <= 1440): continue 
@@ -159,7 +162,7 @@ async def processar_liga_async(session, liga_key, agora_br):
         for m in pinnacle.get("markets",[]):
             for out in m["outcomes"]:
                 n_out = normalizar_nome(out["name"])
-                chave_hist = f"{jogo_id}_{m['key']}_{n_out}"
+                chave_hist = f"{jogo_id}_{m['key']}_{n_out}_{out.get('point','')}"
                 preco_atual = out["price"]
                 if chave_hist in historico_pinnacle and (historico_pinnacle[chave_hist]["price"] - preco_atual) / historico_pinnacle[chave_hist]["price"] >= 0.06:
                     dropping_alerts[chave_hist] = True
@@ -168,78 +171,134 @@ async def processar_liga_async(session, liga_key, agora_br):
         oportunidades_jogo =[]
         for soft_b in bookmakers:
             if soft_b["key"] not in SOFT_BOOKIES: continue
-            for m_key in ["h2h", "btts"]:
+            
+            for m_key in ["h2h", "btts", "totals"]:
                 pin_m = next((m for m in pinnacle.get("markets",[]) if m["key"] == m_key), None)
                 soft_m = next((m for m in soft_b.get("markets",[]) if m["key"] == m_key), None)
+                
                 if pin_m and soft_m:
-                    probs_justas = calcular_prob_justa(pin_m["outcomes"])
-                    for s_out in soft_m["outcomes"]:
-                        n_out = normalizar_nome(s_out["name"])
-                        if n_out in probs_justas:
-                            prob_real, odd_pin = probs_justas[n_out]
-                            odd_oferecida = s_out["price"]
-                            ev_real = (prob_real * odd_oferecida) - 1
-                            if prob_real > 0 and validar_futebol(odd_oferecida, ev_real, liga_key):
-                                is_dropping = dropping_alerts.get(f"{jogo_id}_{m_key}_{n_out}", False)
-                                score = (ev_real * 100) * prob_real * LEAGUE_TIERS.get(liga_key, 1.0) * (1.3 if is_dropping else 1.0)
-                                traducao = "Vencedor (1X2)" if m_key == "h2h" else "Ambas Marcam"
-                                selecao = "Sim" if s_out["name"]=="Yes" else "Não" if s_out["name"]=="No" else s_out["name"].replace("/", " ou ")
-                                oportunidades_jogo.append({
-                                    "jogo_id": jogo_id, "evento": evento, "home_team": evento["home_team"], "away_team": evento["away_team"],
-                                    "horario_br": horario_br, "minutos": minutos, "mercado_nome": traducao, "selecao_nome": selecao,
-                                    "odd_bookie": odd_oferecida, "odd_pinnacle": odd_pin, "prob_justa": prob_real, "ev_real": ev_real,
-                                    "nome_bookie": soft_b["title"], "is_dropping": is_dropping, "ranking_score": score, "esporte": "soccer"
-                                })
+                    if m_key in ["h2h", "btts"]:
+                        probs_justas = calcular_prob_justa(pin_m["outcomes"])
+                        for s_out in soft_m["outcomes"]:
+                            n_out = normalizar_nome(s_out["name"])
+                            if n_out in probs_justas:
+                                prob_real, odd_pin = probs_justas[n_out]
+                                odd_oferecida = s_out["price"]
+                                ev_real = (prob_real * odd_oferecida) - 1
+                                if prob_real > 0 and validar_futebol(odd_oferecida, ev_real, liga_key):
+                                    is_dropping = dropping_alerts.get(f"{jogo_id}_{m_key}_{n_out}_", False)
+                                    score = (ev_real * 100) * prob_real * LEAGUE_TIERS.get(liga_key, 1.0) * (1.3 if is_dropping else 1.0)
+                                    traducao = "Vencedor (1X2)" if m_key == "h2h" else "Ambas Marcam"
+                                    selecao = "Sim" if s_out["name"]=="Yes" else "Não" if s_out["name"]=="No" else s_out["name"].replace("/", " ou ")
+                                    oportunidades_jogo.append({
+                                        "jogo_id": jogo_id, "evento": evento, "home_team": evento["home_team"], "away_team": evento["away_team"],
+                                        "horario_br": horario_br, "minutos": minutos, "mercado_nome": traducao, "selecao_nome": selecao,
+                                        "odd_bookie": odd_oferecida, "odd_pinnacle": odd_pin, "prob_justa": prob_real, "ev_real": ev_real,
+                                        "nome_bookie": soft_b["title"], "is_dropping": is_dropping, "ranking_score": score, "esporte": "soccer"
+                                    })
+                    elif m_key == "totals":
+                        for s_out in soft_m["outcomes"]:
+                            ponto = s_out.get("point")
+                            n_out = normalizar_nome(s_out["name"])
+                            pin_match = next((p for p in pin_m["outcomes"] if normalizar_nome(p["name"]) == n_out and p.get("point") == ponto), None)
+                            if pin_match and (1.50 <= pin_match["price"] <= 2.50):
+                                par_pin =[p for p in pin_m["outcomes"] if p.get("point") == ponto]
+                                try:
+                                    prob_real = (1 / pin_match["price"]) / sum(1 / i["price"] for i in par_pin if i["price"] > 0)
+                                    odd_oferecida = s_out["price"]
+                                    ev_real = (prob_real * odd_oferecida) - 1
+                                    if prob_real > 0 and validar_futebol(odd_oferecida, ev_real, liga_key):
+                                        is_dropping = dropping_alerts.get(f"{jogo_id}_{m_key}_{n_out}_{ponto}", False)
+                                        score = (ev_real * 100) * prob_real * LEAGUE_TIERS.get(liga_key, 1.0)
+                                        oportunidades_jogo.append({
+                                            "jogo_id": jogo_id, "evento": evento, "home_team": evento["home_team"], "away_team": evento["away_team"],
+                                            "horario_br": horario_br, "minutos": minutos, "mercado_nome": "Gols (Mais/Menos)", "selecao_nome": f"{s_out['name']} {ponto}",
+                                            "odd_bookie": odd_oferecida, "odd_pinnacle": pin_match["price"], "prob_justa": prob_real, "ev_real": ev_real,
+                                            "nome_bookie": soft_b["title"], "is_dropping": is_dropping, "ranking_score": score, "esporte": "soccer"
+                                        })
+                                except: pass
+
         if oportunidades_jogo:
-            oportunidades_globais.append(max(oportunidades_jogo, key=lambda x: x["ranking_score"]))
+            # 🔥 MOTOR DE "CRIAR APOSTA" (BET BUILDER) 🔥
+            # Se o bot achou 2 ou mais mercados com valor NO MESMO JOGO, ele junta!
+            mercados_unicos =[]
+            mercados_vistos = set()
+            for op in sorted(oportunidades_jogo, key=lambda x: x["ev_real"], reverse=True):
+                if op["mercado_nome"] not in mercados_vistos and op["ev_real"] >= 0.015:
+                    mercados_unicos.append(op)
+                    mercados_vistos.add(op["mercado_nome"])
+            
+            if len(mercados_unicos) >= 2 and jogo_id not in sgp_enviados:
+                sgp_globais.append({
+                    "jogo_id": jogo_id,
+                    "evento": evento,
+                    "home_team": evento["home_team"],
+                    "away_team": evento["away_team"],
+                    "horario_br": horario_br,
+                    "pernas": mercados_unicos
+                })
+
+            # Adiciona o melhor mercado avulso desse jogo para a lista global de Singles (se ainda não enviou)
+            if jogo_id not in jogos_enviados:
+                oportunidades_globais.append(max(oportunidades_jogo, key=lambda x: x["ranking_score"]))
 
 async def varrer_e_enviar():
-    global jogos_enviados, historico_pinnacle
+    global jogos_enviados, sgp_enviados, historico_pinnacle
     agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
     treinar_ia()
+    
     jogos_enviados = {k: v for k, v in jogos_enviados.items() if agora_br <= v}
+    sgp_enviados = {k: v for k, v in sgp_enviados.items() if agora_br <= v}
     historico_pinnacle = {k: v for k, v in historico_pinnacle.items() if agora_br <= v["expires"]}
+    
     oportunidades_globais.clear()
+    sgp_globais.clear()
     
     async with aiohttp.ClientSession() as session:
         await asyncio.gather(*[processar_liga_async(session, l, agora_br) for l in LIGAS])
 
-        if oportunidades_globais:
-            # Multiplas
-            cand_mult =[op for op in oportunidades_globais if op["odd_bookie"] <= 1.70 and op["prob_justa"] >= 0.60]
-            jogos_mult_ids =[]
-            if len(cand_mult) >= 2:
-                cand_mult.sort(key=lambda x: x["ranking_score"], reverse=True)
-                j_mult = cand_mult[:3]
-                jogos_mult_ids = [op["jogo_id"] for op in j_mult]
-                odd_t = 1.0
-                txt_m = "🔥 <b>OPORTUNIDADE IMPERDÍVEL: MÚLTIPLA FUTEBOL</b> ⚽\n\n"
-                for i, op in enumerate(j_mult, 1):
-                    odd_t *= op["odd_bookie"]
-                    txt_m += f"⚽ <b>Jogo {i}: {op['home_team']} x {op['away_team']}</b>\n👉 <b>Entrada:</b> {op['mercado_nome']} - {op['selecao_nome']} ({op['nome_bookie'].title()})\n📈 <b>Odd:</b> {op['odd_bookie']:.2f}\n\n"
-                txt_m += f"💵 <b>ODD TOTAL:</b> {odd_t:.2f}\n💰 <b>Gestão Sugerida:</b> 0.5% da Banca\n"
-                await enviar_telegram_async(session, txt_m)
-                for op in j_mult:
-                    jogos_enviados[op["jogo_id"]] = agora_br + timedelta(hours=24)
-                    salvar_aposta_banco(op, 0.5)
+        # --- 1. ENVIAR BET BUILDERS (CRIAR APOSTA NO MESMO JOGO) ---
+        for sgp in sgp_globais:
+            odd_combinada = 1.0
+            texto_sgp = "🧩 <b>OPORTUNIDADE: CRIAR APOSTA (BET BUILDER)</b> 🧩\n\n"
+            texto_sgp += f"🏆 <b>Liga:</b> {sgp['evento']['sport_title']}\n"
+            texto_seq = f"⚽ <b>Jogo:</b> {sgp['home_team']} x {sgp['away_team']}\n⏰ <b>Horário:</b> {sgp['horario_br'].strftime('%H:%M')}\n\n"
+            texto_sgp += texto_seq
+            texto_sgp += "🛠️ <b>Vá em 'Criar Aposta' e junte estas seleções:</b>\n"
+            
+            casa_sugerida = sgp["pernas"][0]["nome_bookie"].title()
+            for i, perna in enumerate(sgp["pernas"], 1):
+                odd_combinada *= perna["odd_bookie"]
+                texto_sgp += f"👉 <b>Selo {i}:</b> {perna['mercado_nome']} - {perna['selecao_nome']}\n"
+            
+            # As casas cobram uma taxa ao cruzar apostas, então a odd real é uns 15% menor
+            odd_estimada = odd_combinada * 0.85 
+            
+            texto_sgp += f"\n🏦 <b>Casa Sugerida:</b> {casa_sugerida} ou Bet365\n"
+            texto_sgp += f"💵 <b>Odd Combinada Estimada:</b> ~{odd_estimada:.2f}\n"
+            texto_sgp += f"💰 <b>Gestão Sugerida:</b> 0.5% da Banca\n"
+            texto_sgp += f"💡 <i>(O Algoritmo encontrou Desajuste Matemático em todos esses mercados juntos!)</i>"
+            
+            await enviar_telegram_async(session, texto_sgp)
+            sgp_enviados[sgp["jogo_id"]] = agora_br + timedelta(hours=24)
+            # Aproveita e já bloqueia o single desse jogo pra não poluir
+            jogos_enviados[sgp["jogo_id"]] = agora_br + timedelta(hours=24)
 
-            # Singles e Controle de Limite 10/dia
-            singles = [op for op in oportunidades_globais if op["jogo_id"] not in jogos_mult_ids]
+        # --- 2. ENVIAR SINGLES NORMAIS ---
+        if oportunidades_globais:
+            singles = [op for op in oportunidades_globais if op["jogo_id"] not in sgp_enviados]
             singles.sort(key=lambda x: x["ranking_score"], reverse=True)
             
             total_hoje, fut_hoje = checar_limite_diario()
             vagas_restantes_global = max(0, 10 - total_hoje)
-            
-            # Tenta mandar 5 de futebol. Mas se o basquete mandou pouco e sobrou vaga, ele usa.
             vagas_permitidas = min(5, vagas_restantes_global)
             
-            # SE TIVER APOSTAS ELITE, ele pode "roubar" vagas do basquete até o teto de 10
             if vagas_restantes_global > 0:
                 singles_finais =[]
                 for op in singles:
                     if len(singles_finais) < vagas_permitidas:
                         singles_finais.append(op)
-                    elif len(singles_finais) < vagas_restantes_global and op["ranking_score"] > 2.0: # Super Elite "rouba" vaga
+                    elif len(singles_finais) < vagas_restantes_global and op["ranking_score"] > 2.0:
                         singles_finais.append(op)
                         
                 singles_finais.sort(key=lambda x: x["horario_br"])
@@ -254,7 +313,7 @@ async def varrer_e_enviar():
                     txt = (f"{cb}\n\n🏆 <b>Liga:</b> {op['evento']['sport_title']}\n⏰ <b>Horário:</b> {op['horario_br'].strftime('%H:%M')}\n"
                            f"⚽ <b>Jogo:</b> {op['home_team']} x {op['away_team']}\n\n🎯 <b>Mercado:</b> {op['mercado_nome']}\n"
                            f"👉 <b>Entrada:</b> {op['selecao_nome']}\n🏛️ <b>Casa:</b> {op['nome_bookie'].upper()}\n"
-                           f"📈 <b>Odd Atual:</b> {op['odd_bookie']:.2f}\n\n💰 <b>Gestão/Stake:</b> {st:.1f}%\n"
+                           f"📈 <b>Odd Atual:</b> {op['odd_bookie']:.2f} (Pin: {op['odd_pinnacle']:.2f})\n\n💰 <b>Gestão/Stake:</b> {st:.1f}%\n"
                            f"🛡️ <b>Confiança:</b> {cf}\n📊 <b>Valor (+EV):</b> +{ev*100:.2f}%\n✅ <b>Probabilidade:</b> {op['prob_justa']*100:.1f}%\n")
                     await enviar_telegram_async(session, txt)
                     jogos_enviados[op["jogo_id"]] = agora_br + timedelta(hours=24)
@@ -269,5 +328,6 @@ async def loop_infinito():
 
 if __name__ == "__main__":
     carregar_memoria_banco()
-    print("🤖 BOT FUTEBOL SINDICATO V12 INICIADO")
+    print("🤖 BOT FUTEBOL SINDICATO V12.1 INICIADO")
+    print("🔥 Motor de 'CRIAR APOSTA' (Bet Builder) Ativado!")
     asyncio.run(loop_infinito())
