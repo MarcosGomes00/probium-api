@@ -2,36 +2,98 @@ import asyncio
 import aiohttp
 import sqlite3
 import unicodedata
+import time
+import json
+import heapq
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from dataclasses import dataclass
-from typing import Optional, List, Dict
-import json
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Tuple
+import statistics
+from collections import defaultdict
 
 # ==========================================
-# CONFIGURAÇÕES BOT 1 - FUTEBOL PRO
+# CONFIGURAÇÕES BOT 1 - FUTEBOL PRO MULTIPROVIDER
 # ==========================================
 
-# APIs THE-ODDS-API (9 chaves - rotação automática)
-API_KEYS_ODDS = [
-    "6a1c0078b3ed09b42fbacee8f07e7cc3",
-    "4949c49070dd3eff2113bd1a07293165",
-    "0ecb237829d0f800181538e1a4fa2494",
-    "4790419cc795932ffaeb0152fa5818c8",
-    "5ee1c6a8c611b6c3d6aff8043764555f",
+# ==========================================
+# CHAVES DE API MULTIPROVIDER - FAILOVER SYSTEM
+# ==========================================
+
+# 1. ODDS API (Odds-API.io) - Melhor custo-benefício, WebSocket
+ODDS_API_KEYS = [
+    "6249ca36b148b2542bb433d23e4ace65a97c896b7dc3b93c79b4a6715b29ea7d",
+    "b29dcd347f5f26ddebb469eaa9e5f98fb75ca20be03cc47117027604d0a9f029",
+    "528e79310c9161f769a282b8d2aa61be2bb332e0cc036a51e44acee5ca7bd66f"
+]
+
+# 2. Sports Game Odds (SGO) - Modelo de precificação superior
+SGO_API_KEYS = [
+    "e38185eb8b9eff32802ff016db544dc3"
+]
+
+# 3. API-Football (API-Sports) - Gratuito para sempre, 100 req/dia
+API_FOOTBALL_KEYS = [
+    "da86ad79bf29f8ec19e1addb90247771",
+    "4671a78ca6443a7970d2ed8efe4cbdba",
+    "54e4ec4343a1abe56fe74a2eabc58ff7"
+]
+
+# 4. Sportmonks - Gratuito para sempre, 180 req/hora
+SPORTMONKS_KEYS = [
+    "J2b3qS2pn660ss8pJUhTijsHHMmbDPQuxN3rnHhO7nnsUrI8qctzpla1LwQU"
+]
+
+# 5. The Odds Token (OddsPapi) - 346 bookmakers, dados sharps
+THE_ODDS_TOKEN_KEYS = [
     "b668851102c3e0a56c33220161c029ec",
     "0d43575dd39e175ba670fb91b2230442",
     "d32378e66e89f159688cc2239f38a6a4",
     "713146de690026b224dd8bbf0abc0339"
 ]
 
-TELEGRAM_TOKEN = "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A"
+# 6. The Odds API (Legado - mantido como backup)
+THE_ODDS_API_LEGACY_KEYS = [
+    "6a1c0078b3ed09b42fbacee8f07e7cc3",
+    "4949c49070dd3eff2113bd1a07293165",
+    "0ecb237829d0f800181538e1a4fa2494",
+    "4790419cc795932ffaeb0152fa5818c8",
+    "5ee1c6a8c611b6c3d6aff8043764555f"
+]
+
+# 7. SportsDB (sportsdb.dev) - Dados estatísticos
+SPORTSDB_KEYS = [
+    "f8W9DfG71LPWMeU2TxkMtK1PEmWVwGzWW2B1Lmk9",
+    "z7Dzdk5NlGtFvg5SqfL1IZWGkjOkXnOsv7tiPRrS",
+    "ftAAx0FNerTm0lFMxFnWmxEbFKn7BSEMF83yosTf",
+    "w1SolKpreujO7wmAKJmrW1lvfB7zK3Vv6ORnFc1t"
+]
+
+# Configurações de Tokens do Telegram
+TELEGRAM_TOKENS = {
+    "bot1": "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A",
+    "bot2": "8185027087:AAH1JQJKtlWy_oUQpAvqvHEsFIVOK3ScYBc",
+    "bot3": "8413563055:AAGyovCDMJOxiAukTbXwaJPm3ZDckIf7qJU"
+}
+
+# Usando Bot1 como principal
+TELEGRAM_TOKEN = TELEGRAM_TOKENS["bot1"]
 CHAT_ID = "-1003814625223"
 DB_FILE = "probum.db"
 
 SCAN_INTERVAL = 21600  # 6 horas
 REQUEST_DELAY = 1.5  # Segundos entre requisições
-MAX_REQ_POR_CHAVE_DIA = 80
+
+# Limites por provedor (ajustados conforme documentação)
+MAX_REQ_POR_CHAVE_DIA = {
+    "odds_api": 2400,        # 100/hora * 24 = 2400/dia (Odds-API.io)
+    "sgo": 1000,             # 1.000 objetos/mês (Sports Game Odds)
+    "api_football": 100,     # 100/dia (API-Sports)
+    "sportmonks": 4320,      # 180/hora * 24 = 4320/dia
+    "the_odds_token": 500,   # Estimado conservador
+    "the_odds_api_legacy": 80,
+    "sportsdb": 1000         # Estimado
+}
 
 SOFT_BOOKIES = [
     "bet365", "betano", "1xbet", "draftkings", 
@@ -71,15 +133,15 @@ LIGAS = list(LEAGUE_TIERS.keys())
 @dataclass
 class EstatisticasTime:
     nome: str
-    ultimos_jogos: List[Dict]
-    media_gols_marcados: float
-    media_gols_sofridos: float
-    jogos_sem_sofrer_gol: int
-    jogos_marcou_gol: int
-    over_15: float
-    over_25: float
-    btts_sim: float
-    forma: str
+    ultimos_jogos: List[Dict] = field(default_factory=list)
+    media_gols_marcados: float = 0.0
+    media_gols_sofridos: float = 0.0
+    jogos_sem_sofrer_gol: int = 0
+    jogos_marcou_gol: int = 0
+    over_15: float = 0.0
+    over_25: float = 0.0
+    btts_sim: float = 0.0
+    forma: str = ""
     xg_medio: Optional[float] = None
     posicao_tabela: Optional[int] = None
 
@@ -104,13 +166,263 @@ class AnaliseJogo:
     nivel_confianca: str
     melhor_entrada: str
     mercados_interessantes: List[str]
+    fonte_dados: str = ""
+    linha: Optional[float] = None
 
 jogos_enviados = {}
-chave_odds_atual = 0
 api_lock = asyncio.Lock()
 request_count = {}
 last_request_time = 0
-chaves_falhas = set()  # Track de chaves que falharam (401/429)
+chaves_falhas = {}
+provedores_falhos = set()
+
+# Índices de rotação para cada provedor
+indice_chaves = {
+    "odds_api": 0,
+    "sgo": 0,
+    "api_football": 0,
+    "sportmonks": 0,
+    "the_odds_token": 0,
+    "the_odds_api_legacy": 0,
+    "sportsdb": 0
+}
+
+# ==========================================
+# SISTEMA DE HEALTH CHECK PARA PROVEDORES
+# ==========================================
+
+@dataclass
+class ProvedorHealth:
+    latencias: List[float] = field(default_factory=list)
+    erros_consecutivos: int = 0
+    sucessos_consecutivos: int = 0
+    ultimo_sucesso: datetime = field(default_factory=datetime.now)
+    score: float = 100.0
+    total_requisicoes: int = 0
+    total_erros: int = 0
+    
+    def registrar_sucesso(self, latencia_ms: float):
+        self.latencias.append(latencia_ms)
+        if len(self.latencias) > 10:
+            self.latencias.pop(0)
+        self.erros_consecutivos = 0
+        self.sucessos_consecutivos += 1
+        self.ultimo_sucesso = datetime.now()
+        self.score = min(100.0, self.score + 10.0)
+        self.total_requisicoes += 1
+    
+    def registrar_erro(self):
+        self.erros_consecutivos += 1
+        self.sucessos_consecutivos = 0
+        penalidade = 15 * self.erros_consecutivos
+        self.score = max(0.0, self.score - penalidade)
+        self.total_requisicoes += 1
+        self.total_erros += 1
+    
+    def esta_saudavel(self) -> bool:
+        return self.score > 30 and self.erros_consecutivos < 3
+    
+    def latencia_media(self) -> float:
+        if not self.latencias:
+            return 0.0
+        return statistics.mean(self.latencias)
+    
+    def taxa_erro(self) -> float:
+        if self.total_requisicoes == 0:
+            return 0.0
+        return (self.total_erros / self.total_requisicoes) * 100
+
+# ==========================================
+# SISTEMA DE CACHE DISTRIBUÍDO DE ODDS
+# ==========================================
+
+class OddsCache:
+    def __init__(self, db_file="odds_cache_futebol.db"):
+        self.db = db_file
+        self.init_db()
+        self.cache_hits = 0
+        self.cache_misses = 0
+    
+    def init_db(self):
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS odds_cache (
+                jogo_id TEXT PRIMARY KEY,
+                liga TEXT,
+                dados_json TEXT,
+                provedor TEXT,
+                timestamp REAL,
+                ttl INTEGER DEFAULT 300
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_liga ON odds_cache(liga)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON odds_cache(timestamp)")
+        conn.commit()
+        conn.close()
+    
+    def get(self, jogo_id: str) -> Optional[dict]:
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT dados_json, timestamp, ttl FROM odds_cache WHERE jogo_id=?",
+            (jogo_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            dados, ts, ttl = row
+            agora = datetime.now().timestamp()
+            if agora - ts < ttl:
+                self.cache_hits += 1
+                return json.loads(dados)
+        
+        self.cache_misses += 1
+        return None
+    
+    def set(self, jogo_id: str, dados: dict, provedor: str, ttl: int = 300):
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO odds_cache 
+            (jogo_id, liga, dados_json, provedor, timestamp, ttl)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            jogo_id,
+            dados.get("sport_key", "unknown"),
+            json.dumps(dados),
+            provedor,
+            datetime.now().timestamp(),
+            ttl
+        ))
+        conn.commit()
+        conn.close()
+    
+    def limpar_expirados(self):
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        agora = datetime.now().timestamp()
+        cursor.execute("DELETE FROM odds_cache WHERE ? - timestamp > ttl", (agora,))
+        deletados = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deletados
+    
+    def estatisticas(self) -> dict:
+        total = self.cache_hits + self.cache_misses
+        hit_rate = (self.cache_hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self.cache_hits,
+            "misses": self.cache_misses,
+            "hit_rate": hit_rate,
+            "economia_requisicoes": self.cache_hits
+        }
+
+odds_cache = OddsCache()
+
+# ==========================================
+# SISTEMA DE FAILOVER MULTIPROVIDER
+# ==========================================
+
+class APIProviderManager:
+    PRIORIDADE_PROVEDORES = [
+        "odds_api",
+        "sgo",
+        "the_odds_token",
+        "the_odds_api_legacy",
+        "api_football",
+        "sportmonks",
+    ]
+    
+    def __init__(self):
+        self.chaves_por_provedor = {
+            "odds_api": ODDS_API_KEYS,
+            "sgo": SGO_API_KEYS,
+            "api_football": API_FOOTBALL_KEYS,
+            "sportmonks": SPORTMONKS_KEYS,
+            "the_odds_token": THE_ODDS_TOKEN_KEYS,
+            "the_odds_api_legacy": THE_ODDS_API_LEGACY_KEYS,
+            "sportsdb": SPORTSDB_KEYS
+        }
+        
+        self.provedor_atual_idx = 0
+        self.health_por_provedor = {
+            p: ProvedorHealth() for p in self.PRIORIDADE_PROVEDORES if p != "sportsdb"
+        }
+    
+    def get_provedor_atual(self) -> Optional[str]:
+        disponiveis = [p for p in self.PRIORIDADE_PROVEDORES 
+                      if p not in provedores_falhos and self.health_por_provedor.get(p, ProvedorHealth()).esta_saudavel()]
+        
+        if not disponiveis:
+            disponiveis = [p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos]
+        
+        if not disponiveis:
+            return None
+        
+        disponiveis.sort(key=lambda p: self.health_por_provedor.get(p, ProvedorHealth()).score, reverse=True)
+        return disponiveis[0]
+    
+    def proximo_provedor(self):
+        self.provedor_atual_idx = (self.provedor_atual_idx + 1) % len(self.PRIORIDADE_PROVEDORES)
+    
+    def get_chave_valida(self, provedor: str) -> Tuple[Optional[str], int]:
+        chaves = self.chaves_por_provedor.get(provedor, [])
+        if not chaves:
+            return None, 0
+        
+        tentativas = 0
+        while tentativas < len(chaves):
+            idx = indice_chaves[provedor] % len(chaves)
+            chave = chaves[idx]
+            
+            falhas_provedor = chaves_falhas.get(provedor, {})
+            ultima_falha = falhas_provedor.get(chave, 0)
+            
+            if (datetime.now().timestamp() - ultima_falha) > 3600:
+                return chave, idx
+            
+            indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(chaves)
+            tentativas += 1
+        
+        return None, 0
+    
+    def marcar_chave_falha(self, provedor: str, chave: str):
+        if provedor not in chaves_falhas:
+            chaves_falhas[provedor] = {}
+        chaves_falhas[provedor][chave] = datetime.now().timestamp()
+        if provedor in self.health_por_provedor:
+            self.health_por_provedor[provedor].registrar_erro()
+        print(f"⚠️ Chave {chave[:8]}... do {provedor} marcada como falha")
+    
+    def marcar_sucesso(self, provedor: str, latencia_ms: float):
+        if provedor in self.health_por_provedor:
+            self.health_por_provedor[provedor].registrar_sucesso(latencia_ms)
+    
+    def marcar_provedor_offline(self, provedor: str):
+        provedores_falhos.add(provedor)
+        print(f"🚫 Provedor {provedor} marcado como offline temporariamente")
+        asyncio.create_task(self.reativar_provedor(provedor, 1800))
+    
+    async def reativar_provedor(self, provedor: str, delay: int):
+        await asyncio.sleep(delay)
+        if provedor in provedores_falhos:
+            provedores_falhos.remove(provedor)
+            if provedor in self.health_por_provedor:
+                self.health_por_provedor[provedor].score = 50
+            print(f"✅ Provedor {provedor} reativado")
+    
+    def get_health_report(self) -> str:
+        linhas = ["📊 Health Check Provedores:"]
+        for provedor in self.PRIORIDADE_PROVEDORES:
+            if provedor in self.health_por_provedor:
+                h = self.health_por_provedor[provedor]
+                status = "🟢" if h.esta_saudavel() else "🔴"
+                linhas.append(f"{status} {provedor}: Score={h.score:.0f} | Lat={h.latencia_media():.0f}ms | Erros={h.erros_consecutivos}")
+        return "\n".join(linhas)
+
+provider_manager = APIProviderManager()
 
 # ==========================================
 # FUNÇÕES AUXILIARES
@@ -148,10 +460,14 @@ def calcular_nivel_confianca(ev: float, tier_liga: float,
         return "⚡ Médio"
     return "⚠️ Baixo"
 
-def obter_mercados_interessantes(stats_home: EstatisticasTime, 
-                                  stats_away: EstatisticasTime,
+def obter_mercados_interessantes(stats_home: Optional[EstatisticasTime], 
+                                  stats_away: Optional[EstatisticasTime],
                                   h2h: List[Dict]) -> List[str]:
     mercados = []
+    
+    if not stats_home or not stats_away:
+        return mercados
+    
     media_total_gols = (stats_home.media_gols_marcados + stats_home.media_gols_sofridos +
                        stats_away.media_gols_marcados + stats_away.media_gols_sofridos) / 2
     
@@ -227,24 +543,28 @@ def salvar_aposta_banco(op, stake, analise):
                 nivel_confianca TEXT,
                 stats_home TEXT,
                 stats_away TEXT,
-                mercados_sugeridos TEXT
+                mercados_sugeridos TEXT,
+                fonte_dados TEXT,
+                linha REAL
             )
         """)
         
         cursor.execute(
             """
             INSERT OR IGNORE INTO operacoes_tipster
-            (id_aposta,esporte,jogo,liga,mercado,selecao,odd,prob,ev,stake,status,lucro,data_hora,pinnacle_odd,ranking_score,nivel_confianca,stats_home,stats_away,mercados_sugeridos)
-            VALUES (?,?,?,?,?,?,?,?,?,?, 'PENDENTE',0,?,?,?,?,?,?,?)
+            (id_aposta,esporte,jogo,liga,mercado,selecao,odd,prob,ev,stake,status,lucro,data_hora,pinnacle_odd,ranking_score,nivel_confianca,stats_home,stats_away,mercados_sugeridos,fonte_dados,linha)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 id_aposta, "soccer", f"{op['home_team']} x {op['away_team']}",
                 op["evento"]["sport_title"], op["mercado_nome"], op["selecao_nome"],
-                op["odd_bookie"], op["prob_justa"], op["ev_real"], stake, hoje,
+                op["odd_bookie"], op["prob_justa"], op["ev_real"], stake, 'PENDENTE', 0, hoje,
                 op["odd_pinnacle"], op["ranking_score"], analise.nivel_confianca,
                 json.dumps(analise.stats_home.__dict__ if analise.stats_home else {}),
                 json.dumps(analise.stats_away.__dict__ if analise.stats_away else {}),
-                json.dumps(analise.mercados_interessantes)
+                json.dumps(analise.mercados_interessantes),
+                analise.fonte_dados,
+                op.get("linha")
             )
         )
         conn.commit()
@@ -253,129 +573,227 @@ def salvar_aposta_banco(op, stake, analise):
         print(f"Erro ao salvar: {e}")
 
 # ==========================================
-# TELEGRAM
+# TELEGRAM - MULTIBOT FAILOVER
 # ==========================================
 
 async def enviar_telegram_async(session, analise: AnaliseJogo):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    bots = [TELEGRAM_TOKENS["bot1"], TELEGRAM_TOKENS["bot2"], TELEGRAM_TOKENS["bot3"]]
     
-    stats_txt = ""
-    if analise.stats_home and analise.stats_away:
-        stats_txt = (
-            f"\n📊 <b>Estatísticas:</b>\n"
-            f"  {analise.home_team}: {analise.stats_home.media_gols_marcados:.1f} gols/jogo | Forma: {analise.stats_home.forma}\n"
-            f"  {analise.away_team}: {analise.stats_away.media_gols_marcados:.1f} gols/jogo | Forma: {analise.stats_away.forma}\n"
+    for token in bots:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        
+        stats_txt = ""
+        if analise.stats_home and analise.stats_away:
+            stats_txt = (
+                f"\n📊 <b>Estatísticas:</b>\n"
+                f"  {analise.home_team}: {analise.stats_home.media_gols_marcados:.1f} gols/jogo | Forma: {analise.stats_home.forma}\n"
+                f"  {analise.away_team}: {analise.stats_away.media_gols_marcados:.1f} gols/jogo | Forma: {analise.stats_away.forma}\n"
+            )
+        
+        h2h_txt = ""
+        if analise.h2h:
+            ultimos_h2h = analise.h2h[:3]
+            resultados = []
+            for jogo in ultimos_h2h:
+                home = jogo.get("teams", {}).get("home", {}).get("name", "")
+                away = jogo.get("teams", {}).get("away", {}).get("name", "")
+                gols_home = jogo.get("goals", {}).get("home", 0)
+                gols_away = jogo.get("goals", {}).get("away", 0)
+                resultados.append(f"{home} {gols_home}x{gols_away} {away}")
+            h2h_txt = f"\n🔄 <b>Últimos H2H:</b>\n  " + "\n  ".join(resultados) + "\n"
+        
+        mercados_txt = "\n".join([f"  • {m}" for m in analise.mercados_interessantes[:4]]) if analise.mercados_interessantes else "  • Dados insuficientes"
+        
+        txt = (
+            f"⚽ <b>ANÁLISE PROFISSIONAL - VALOR ENCONTRADO</b>\n"
+            f"<i>Fonte: {analise.fonte_dados}</i>\n\n"
+            f"🏆 <b>{analise.liga}</b>\n"
+            f"⚔️ <b>Jogo:</b> {analise.home_team} x {analise.away_team}\n"
+            f"⏰ <b>Horário:</b> {analise.horario_br.strftime('%d/%m %H:%M')}\n"
+            f"{stats_txt}"
+            f"{h2h_txt}\n"
+            f"🎯 <b>Mercado Principal:</b> {analise.mercado_nome}\n"
+            f"👉 <b>Entrada:</b> {analise.selecao_nome}\n"
+            f"🏛️ <b>Casa:</b> {analise.nome_bookie.upper()}\n"
+            f"📈 <b>Odd:</b> {analise.odd_bookie:.2f} (Pinnacle: {analise.odd_pinnacle:.2f})\n"
+            f"📊 <b>EV:</b> +{analise.ev_real*100:.1f}% | <b>Prob Real:</b> {analise.prob_justa*100:.1f}%\n\n"
+            f"💡 <b>Mercados Interessantes:</b>\n{mercados_txt}\n\n"
+            f"✅ <b>Melhor Entrada:</b> {analise.selecao_nome} @ {analise.odd_bookie:.2f}\n"
+            f"{analise.nivel_confianca} <b>Nível de Confiança</b>\n\n"
+            f"⚠️ Aposte com responsabilidade. Análise baseada em probabilidade e estatística."
         )
-    
-    h2h_txt = ""
-    if analise.h2h:
-        ultimos_h2h = analise.h2h[:3]
-        resultados = []
-        for jogo in ultimos_h2h:
-            home = jogo.get("teams", {}).get("home", {}).get("name", "")
-            away = jogo.get("teams", {}).get("away", {}).get("name", "")
-            gols_home = jogo.get("goals", {}).get("home", 0)
-            gols_away = jogo.get("goals", {}).get("away", 0)
-            resultados.append(f"{home} {gols_home}x{gols_away} {away}")
-        h2h_txt = f"\n🔄 <b>Últimos H2H:</b>\n  " + "\n  ".join(resultados) + "\n"
-    
-    mercados_txt = "\n".join([f"  • {m}" for m in analise.mercados_interessantes[:4]]) if analise.mercados_interessantes else "  • Dados insuficientes"
-    
-    txt = (
-        f"⚽ <b>ANÁLISE PROFISSIONAL - VALOR ENCONTRADO</b>\n\n"
-        f"🏆 <b>{analise.liga}</b>\n"
-        f"⚔️ <b>Jogo:</b> {analise.home_team} x {analise.away_team}\n"
-        f"⏰ <b>Horário:</b> {analise.horario_br.strftime('%d/%m %H:%M')}\n"
-        f"{stats_txt}"
-        f"{h2h_txt}\n"
-        f"🎯 <b>Mercado Principal:</b> {analise.mercado_nome}\n"
-        f"👉 <b>Entrada:</b> {analise.selecao_nome}\n"
-        f"🏛️ <b>Casa:</b> {analise.nome_bookie.upper()}\n"
-        f"📈 <b>Odd:</b> {analise.odd_bookie:.2f} (Pinnacle: {analise.odd_pinnacle:.2f})\n"
-        f"📊 <b>EV:</b> +{analise.ev_real*100:.1f}% | <b>Prob Real:</b> {analise.prob_justa*100:.1f}%\n\n"
-        f"💡 <b>Mercados Interessantes:</b>\n{mercados_txt}\n\n"
-        f"✅ <b>Melhor Entrada:</b> {analise.selecao_nome} @ {analise.odd_bookie:.2f}\n"
-        f"{analise.nivel_confianca} <b>Nível de Confiança</b>\n\n"
-        f"⚠️ Aposte com responsabilidade. Análise baseada em probabilidade e estatística."
-    )
-    
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": txt,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    
-    try:
-        await session.post(url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Erro Telegram: {e}")
-
-# ==========================================
-# REQUISIÇÕES COM FAILOVER AUTOMÁTICO
-# ==========================================
-
-def get_proxima_chave_valida():
-    """Retorna a próxima chave que não está na lista de falhas"""
-    global chave_odds_atual
-    tentativas = 0
-    while tentativas < len(API_KEYS_ODDS):
-        chave = API_KEYS_ODDS[chave_odds_atual]
-        if chave not in chaves_falhas:
-            return chave
-        chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
-        tentativas += 1
-    return None  # Todas as chaves falharam
-
-async def fazer_requisicao_odds(session, url, parametros):
-    global chave_odds_atual, chaves_falhas
-    
-    # Reset chaves falhas a cada hora (tentar novamente)
-    if len(chaves_falhas) >= len(API_KEYS_ODDS) - 2:
-        chaves_falhas.clear()
-        print("🔄 Resetando chaves falhas após 1 hora")
-    
-    for tentativa in range(len(API_KEYS_ODDS) * 2):  # Tentar cada chave 2x
-        await rate_limit()
         
-        async with api_lock:
-            chave = get_proxima_chave_valida()
-            if not chave:
-                print("❌ Todas as chaves da API falharam!")
-                return None
-            
-            hoje = datetime.now().strftime("%Y%m%d")
-            chave_hoje = f"{chave}_{hoje}"
-            
-            if request_count.get(chave_hoje, 0) >= MAX_REQ_POR_CHAVE_DIA:
-                chaves_falhas.add(chave)
-                chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
-                continue
-        
-        parametros["apiKey"] = chave
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": txt,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
         
         try:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                if resp.status == 200:
+                    return True
+                else:
+                    print(f"⚠️ Bot falhou com status {resp.status}, tentando próximo...")
+        except Exception as e:
+            print(f"Erro Telegram com bot: {e}")
+    
+    print("❌ Todos os bots falharam!")
+    return False
+
+# ==========================================
+# REQUISIÇÕES MULTIPROVIDER COM FAILOVER E CACHE
+# ==========================================
+
+async def fazer_requisicao_odds_multiprovider(session, liga_key: str, tentativas_max: int = 10):
+    for tentativa in range(tentativas_max):
+        provedor = provider_manager.get_provedor_atual()
+        
+        if not provedor:
+            print("❌ Nenhum provedor disponível! Aguardando 5 minutos...")
+            await asyncio.sleep(300)
+            provedores_falhos.clear()
+            continue
+        
+        chave, idx = provider_manager.get_chave_valida(provedor)
+        
+        if not chave:
+            print(f"⚠️ Todas as chaves do {provedor} esgotadas/falhas")
+            provider_manager.marcar_provedor_offline(provedor)
+            provider_manager.proximo_provedor()
+            continue
+        
+        await rate_limit()
+        
+        inicio_req = time.time()
+        url, parametros = construir_requisicao_provedor(provedor, liga_key, chave)
+        
+        try:
+            hoje = datetime.now().strftime("%Y%m%d")
+            chave_hoje = f"{provedor}_{chave}_{hoje}"
+            
+            async with api_lock:
+                request_count[chave_hoje] = request_count.get(chave_hoje, 0) + 1
+                
+                if request_count[chave_hoje] >= MAX_REQ_POR_CHAVE_DIA.get(provedor, 100):
+                    print(f"⚠️ Limite diário atingido para {provedor}")
+                    provider_manager.marcar_chave_falha(provedor, chave)
+                    indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(provider_manager.chaves_por_provedor[provedor])
+                    continue
+            
             async with session.get(url, params=parametros, timeout=15) as r:
-                async with api_lock:
-                    request_count[chave_hoje] = request_count.get(chave_hoje, 0) + 1
+                latencia_ms = (time.time() - inicio_req) * 1000
                 
                 if r.status == 200:
-                    return await r.json()
-                elif r.status in [401, 429]:
-                    print(f"⚠️ Chave {chave[:8]}... falhou com status {r.status}")
-                    async with api_lock:
-                        chaves_falhas.add(chave)
-                        chave_odds_atual = (chave_odds_atual + 1) % len(API_KEYS_ODDS)
+                    dados = await r.json()
+                    provider_manager.marcar_sucesso(provedor, latencia_ms)
+                    print(f"✅ Dados obtidos via {provedor} em {latencia_ms:.0f}ms")
+                    return dados, provedor
+                elif r.status in [401, 429, 403]:
+                    print(f"⚠️ {provedor} retornou {r.status}")
+                    provider_manager.marcar_chave_falha(provedor, chave)
+                    indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(provider_manager.chaves_por_provedor[provedor])
                 else:
-                    return await r.json()
+                    print(f"⚠️ {provedor} retornou {r.status}, tentando próximo...")
+                    provider_manager.health_por_provedor[provedor].registrar_erro()
+                    provider_manager.proximo_provedor()
+                    
         except asyncio.TimeoutError:
-            print(f"⏱️ Timeout na chave {chave[:8]}...")
-            continue
+            print(f"⏱️ Timeout no {provedor}")
+            provider_manager.health_por_provedor[provedor].registrar_erro()
+            provider_manager.proximo_provedor()
         except Exception as e:
-            print(f"Erro req: {e}")
-            continue
+            print(f"Erro no {provedor}: {e}")
+            provider_manager.health_por_provedor[provedor].registrar_erro()
+            provider_manager.proximo_provedor()
+        
+        await asyncio.sleep(0.5)
     
-    return None
+    return None, None
+
+def construir_requisicao_provedor(provedor: str, liga_key: str, chave: str) -> Tuple[str, Dict]:
+    if provedor == "odds_api":
+        return (
+            f"https://api.the-odds-api.com/v4/sports/{liga_key}/odds/",
+            {
+                "apiKey": chave,
+                "regions": "eu",
+                "markets": "h2h,btts,totals",
+                "bookmakers": ",".join(TODAS_CASAS)
+            }
+        )
+    
+    elif provedor == "sgo":
+        return (
+            "https://api.sportsgameodds.com/v1/events",
+            {
+                "apiKey": chave,
+                "sport": "soccer",
+                "league": liga_key.replace("soccer_", ""),
+                "markets": "h2h,btts,totals"
+            }
+        )
+    
+    elif provedor == "api_football":
+        return (
+            "https://v3.football.api-sports.io/odds",
+            {
+                "league": mapear_liga_api_football(liga_key),
+                "season": datetime.now().year,
+                "bookmaker": "1"
+            }
+        )
+    
+    elif provedor == "sportmonks":
+        return (
+            f"https://api.sportmonks.com/v3/football/fixtures/upcoming",
+            {
+                "api_token": chave,
+                "leagues": mapear_liga_sportmonks(liga_key),
+                "include": "odds"
+            }
+        )
+    
+    elif provedor in ["the_odds_token", "the_odds_api_legacy"]:
+        return (
+            f"https://api.the-odds-api.com/v4/sports/{liga_key}/odds/",
+            {
+                "apiKey": chave,
+                "regions": "eu",
+                "markets": "h2h,btts,totals",
+                "bookmakers": ",".join(TODAS_CASAS)
+            }
+        )
+    
+    else:
+        return (
+            f"https://api.the-odds-api.com/v4/sports/{liga_key}/odds/",
+            {"apiKey": chave, "regions": "eu", "markets": "h2h"}
+        )
+
+def mapear_liga_api_football(liga_key: str) -> str:
+    mapeamento = {
+        "soccer_uefa_champs_league": "2",
+        "soccer_epl": "39",
+        "soccer_spain_la_liga": "140",
+        "soccer_germany_bundesliga": "78",
+        "soccer_italy_serie_a": "135",
+        "soccer_brazil_campeonato": "71",
+        "soccer_france_ligue_one": "61"
+    }
+    return mapeamento.get(liga_key, "39")
+
+def mapear_liga_sportmonks(liga_key: str) -> str:
+    mapeamento = {
+        "soccer_uefa_champs_league": "2",
+        "soccer_epl": "8",
+        "soccer_spain_la_liga": "564",
+        "soccer_germany_bundesliga": "82",
+        "soccer_italy_serie_a": "384",
+        "soccer_brazil_campeonato": "325"
+    }
+    return mapeamento.get(liga_key, "8")
 
 def validar_futebol(odd, ev, liga):
     if not (1.40 <= odd <= 10.0):
@@ -390,70 +808,102 @@ def validar_futebol(odd, ev, liga):
 # ==========================================
 
 async def processar_liga_async(session, liga_key, agora_br):
-    parametros = {
-        "regions": "eu",
-        "markets": "h2h,btts,totals",
-        "bookmakers": ",".join(TODAS_CASAS)
-    }
+    data, provedor = await fazer_requisicao_odds_multiprovider(session, liga_key)
     
-    data = await fazer_requisicao_odds(
-        session,
-        f"https://api.the-odds-api.com/v4/sports/{liga_key}/odds/",
-        parametros
-    )
-    
-    if not isinstance(data, list):
+    if not data or not isinstance(data, list):
+        print(f"❌ Não foi possível obter dados para {liga_key}")
         return
     
-    for evento in data:
-        jogo_id = str(evento["id"])
+    if provedor == "api_football":
+        eventos = parse_api_football(data)
+    elif provedor == "sportmonks":
+        eventos = parse_sportmonks(data)
+    else:
+        eventos = data
+    
+    for evento in eventos:
+        jogo_id = str(evento.get("id", evento.get("fixture_id", 0)))
+        
+        # Verifica cache primeiro
+        cached = odds_cache.get(jogo_id)
+        if cached:
+            print(f"♻️ Jogo {jogo_id} encontrado no cache, pulando...")
+            continue
+        
         if jogo_id in jogos_enviados:
             continue
         
-        horario_br = datetime.fromisoformat(
-            evento["commence_time"].replace("Z", "+00:00")
-        ).astimezone(ZoneInfo("America/Sao_Paulo"))
+        home_team = evento.get("home_team", evento.get("home", {}).get("name", "Desconhecido"))
+        away_team = evento.get("away_team", evento.get("away", {}).get("name", "Desconhecido"))
+        
+        commence_time = evento.get("commence_time", evento.get("date", datetime.now().isoformat()))
+        try:
+            horario_br = datetime.fromisoformat(
+                commence_time.replace("Z", "+00:00")
+            ).astimezone(ZoneInfo("America/Sao_Paulo"))
+        except:
+            horario_br = datetime.now(ZoneInfo("America/Sao_Paulo")) + timedelta(hours=2)
         
         minutos = (horario_br - agora_br).total_seconds() / 60
         if not (30 <= minutos <= 1440):
             continue
         
-        bookmakers = evento.get("bookmakers", [])
-        pinnacle = next((b for b in bookmakers if b["key"] == SHARP_BOOKIE), None)
+        bookmakers = extrair_bookmakers(evento, provedor)
+        
+        pinnacle = next((b for b in bookmakers if b.get("key") == SHARP_BOOKIE or 
+                        "pinnacle" in b.get("title", "").lower()), None)
+        
+        if not pinnacle:
+            pinnacle = next((b for b in bookmakers if any(ref in b.get("key", "") 
+                          for ref in ["betfair", "matchbook", "smarkets"])), None)
+        
         if not pinnacle:
             continue
         
-        # Simplificado: sem busca externa de stats para economizar API
         stats_home, stats_away, h2h = None, None, []
         
         oportunidades = []
         
         for soft in bookmakers:
-            if soft["key"] not in SOFT_BOOKIES:
+            soft_key = soft.get("key", "").lower()
+            if not any(sb in soft_key for sb in SOFT_BOOKIES):
                 continue
             
-            for m_key in ["h2h", "btts", "totals"]:
-                pin_m = next((m for m in pinnacle.get("markets", []) if m["key"] == m_key), None)
-                soft_m = next((m for m in soft.get("markets", []) if m["key"] == m_key), None)
+            markets = soft.get("markets", soft.get("odds", []))
+            pin_markets = pinnacle.get("markets", pinnacle.get("odds", []))
+            
+            for m_key in ["h2h", "btts", "totals", "1x2", "match_winner"]:
+                pin_m = next((m for m in pin_markets if m.get("key") == m_key or 
+                             m.get("name", "").lower() in [m_key, "match winner"]), None)
+                soft_m = next((m for m in markets if m.get("key") == m_key or 
+                              m.get("name", "").lower() in [m_key, "match winner"]), None)
                 
                 if pin_m and soft_m:
-                    margem = sum(1/out["price"] for out in pin_m["outcomes"] if out["price"] > 0)
+                    outcomes_pin = pin_m.get("outcomes", pin_m.get("values", []))
+                    outcomes_soft = soft_m.get("outcomes", soft_m.get("values", []))
+                    
+                    margem = sum(1/o.get("price", o.get("odd", 999)) for o in outcomes_pin 
+                                if o.get("price", o.get("odd", 0)) > 0)
                     if margem <= 0:
                         continue
                     
-                    for s_out in soft_m["outcomes"]:
+                    for s_out in outcomes_soft:
+                        s_price = s_out.get("price", s_out.get("odd", 0))
+                        s_name = s_out.get("name", s_out.get("value", "Desconhecido"))
+                        
                         p_match = next(
-                            (p for p in pin_m["outcomes"]
-                             if normalizar_nome(p["name"]) == normalizar_nome(s_out["name"])
+                            (p for p in outcomes_pin
+                             if normalizar_nome(p.get("name", p.get("value", ""))) == normalizar_nome(s_name)
                              and p.get("point") == s_out.get("point")),
                             None
                         )
                         
                         if p_match:
-                            prob_real = (1 / p_match["price"]) / margem
-                            ev = (prob_real * s_out["price"]) - 1
+                            p_price = p_match.get("price", p_match.get("odd", 1))
+                            prob_real = (1 / p_price) / margem
+                            ev = (prob_real * s_price) - 1
                             
-                            if validar_futebol(s_out["price"], ev, liga_key):
+                            if validar_futebol(s_price, ev, liga_key):
                                 score = ev * LEAGUE_TIERS.get(liga_key, 1.0)
                                 
                                 nivel = calcular_nivel_confianca(ev, LEAGUE_TIERS.get(liga_key, 1.0), stats_home, stats_away)
@@ -461,15 +911,18 @@ async def processar_liga_async(session, liga_key, agora_br):
                                 
                                 oportunidades.append({
                                     "jogo_id": jogo_id, "evento": evento,
-                                    "home_team": evento["home_team"], "away_team": evento["away_team"],
+                                    "home_team": home_team, "away_team": away_team,
                                     "horario_br": horario_br, "mercado_nome": m_key.upper(),
-                                    "selecao_nome": f"{s_out['name']} {s_out.get('point','')}",
-                                    "odd_bookie": s_out["price"], "odd_pinnacle": p_match["price"],
+                                    "selecao_nome": f"{s_name} {s_out.get('point','')}",
+                                    "odd_bookie": s_price, "odd_pinnacle": p_price,
                                     "prob_justa": prob_real, "ev_real": ev,
-                                    "nome_bookie": soft["title"], "ranking_score": score,
+                                    "nome_bookie": soft.get("title", soft_key),
+                                    "ranking_score": score,
                                     "stats_home": stats_home, "stats_away": stats_away,
                                     "h2h": h2h, "nivel_confianca": nivel,
-                                    "mercados_interessantes": mercados
+                                    "mercados_interessantes": mercados,
+                                    "fonte_dados": provedor,
+                                    "linha": s_out.get("point")
                                 })
         
         if oportunidades:
@@ -500,31 +953,75 @@ async def processar_liga_async(session, liga_key, agora_br):
                 ranking_score=melhor["ranking_score"],
                 nivel_confianca=melhor["nivel_confianca"],
                 melhor_entrada=f"{melhor['selecao_nome']} @ {melhor['odd_bookie']:.2f}",
-                mercados_interessantes=melhor["mercados_interessantes"]
+                mercados_interessantes=melhor["mercados_interessantes"],
+                fonte_dados=provedor.upper(),
+                linha=melhor.get("linha")
             )
             
-            await enviar_telegram_async(session, analise)
-            jogos_enviados[jogo_id] = agora_br + timedelta(hours=24)
-            salvar_aposta_banco(melhor, 1.5, analise)
+            sucesso = await enviar_telegram_async(session, analise)
+            if sucesso:
+                jogos_enviados[jogo_id] = agora_br + timedelta(hours=24)
+                salvar_aposta_banco(melhor, 1.5, analise)
+                # Salva no cache para evitar reprocessamento
+                odds_cache.set(jogo_id, {"status": "enviado", "analise": analise.__dict__}, provedor, ttl=86400)
+
+def extrair_bookmakers(evento: Dict, provedor: str) -> List[Dict]:
+    if provedor == "api_football":
+        return evento.get("bookmakers", [])
+    elif provedor == "sportmonks":
+        return evento.get("odds", {}).get("bookmakers", [])
+    else:
+        return evento.get("bookmakers", [])
+
+def parse_api_football(data: Dict) -> List[Dict]:
+    return data.get("response", [])
+
+def parse_sportmonks(data: Dict) -> List[Dict]:
+    return data.get("data", [])
 
 # ==========================================
-# LOOP
+# LOOP PRINCIPAL
 # ==========================================
 
 async def loop_infinito():
+    carregar_memoria_banco()
+    
+    print("🚀 Bot Futebol iniciado com sistema multiprovider!")
+    print(f"🔑 Provedores configurados: {len(provider_manager.PRIORIDADE_PROVEDORES)}")
+    print(f"🔑 Total de chaves: {sum(len(v) for v in provider_manager.chaves_por_provedor.values())}")
+    print(f"💾 Cache: odds_cache_futebol.db")
+    print(f"🤖 Bots Telegram: 3 (failover automático)")
+    print("=" * 50)
+    
     while True:
         async with aiohttp.ClientSession() as session:
             agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
             print(f"⚽ Varredura Futebol: {agora_br.strftime('%H:%M')}")
+            print(f"📊 Provedores ativos: {[p for p in provider_manager.PRIORIDADE_PROVEDORES if p not in provedores_falhos]}")
             
             for i in range(0, len(LIGAS), 3):
                 batch = LIGAS[i:i+3]
                 await asyncio.gather(*[processar_liga_async(session, liga, agora_br) for liga in batch])
                 await asyncio.sleep(5)
             
+            if provedores_falhos:
+                print(f"🔄 Limpando {len(provedores_falhos)} provedores falhos")
+                provedores_falhos.clear()
+            
+            # Limpa cache expirado
+            limpos = odds_cache.limpar_expirados()
+            if limpos > 0:
+                print(f"🧹 {limpos} entradas de cache removidas")
+            
             hoje = datetime.now().strftime("%Y%m%d")
-            total_req = sum(1 for k in request_count.keys() if k.endswith(f"_{hoje}"))
-            print(f"📊 Requisições hoje: ~{total_req}")
+            total_req = sum(v for k, v in request_count.items() if k.endswith(f"_{hoje}"))
+            cache_stats = odds_cache.estatisticas()
+            
+            print(f"📊 Total requisições hoje: {total_req}")
+            print(f"💾 Cache hit rate: {cache_stats['hit_rate']:.1f}%")
+            print(f"💾 Jogos em memória: {len(jogos_enviados)}")
+            print(provider_manager.get_health_report())
+            print("=" * 50)
         
         await asyncio.sleep(SCAN_INTERVAL)
 
@@ -533,5 +1030,8 @@ async def loop_infinito():
 # ==========================================
 
 if __name__ == "__main__":
-    carregar_memoria_banco()
-    asyncio.run(loop_infinito())
+    try:
+        asyncio.run(loop_infinito())
+    except KeyboardInterrupt:
+        print("\n🛑 Bot Futebol encerrado")
+        print(f"📊 Estatísticas finais: {odds_cache.estatisticas()}")

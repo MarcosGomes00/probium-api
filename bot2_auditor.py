@@ -2,19 +2,45 @@ import sqlite3
 import aiohttp
 import asyncio
 import json
+import statistics
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
-import statistics
+import heapq
 
 # ==========================================
-# CONFIGURAÇÕES BOT 2 - AUDITOR PRO
+# CONFIGURAÇÕES BOT 2 - AUDITOR PRO MULTIPROVIDER
 # ==========================================
 
-# APIs THE-ODDS-API (9 chaves - rotação automática)
-API_KEYS_ODDS = [
+# ==========================================
+# CHAVES DE API MULTIPROVIDER - FAILOVER SYSTEM
+# ==========================================
+
+# 1. ODDS API (Odds-API.io) - Melhor custo-benefício, WebSocket
+ODDS_API_KEYS = [
+    "6249ca36b148b2542bb433d23e4ace65a97c896b7dc3b93c79b4a6715b29ea7d",
+    "b29dcd347f5f26ddebb469eaa9e5f98fb75ca20be03cc47117027604d0a9f029",
+    "528e79310c9161f769a282b8d2aa61be2bb332e0cc036a51e44acee5ca7bd66f"
+]
+
+# 2. Sports Game Odds (SGO) - Modelo de precificação superior
+SGO_API_KEYS = [
+    "e38185eb8b9eff32802ff016db544dc3"
+]
+
+# 3. The Odds Token (OddsPapi) - 346 bookmakers, dados sharps
+THE_ODDS_TOKEN_KEYS = [
+    "b668851102c3e0a56c33220161c029ec",
+    "0d43575dd39e175ba670fb91b2230442",
+    "d32378e66e89f159688cc2239f38a6a4",
+    "713146de690026b224dd8bbf0abc0339"
+]
+
+# 4. The Odds API (Legado - mantido como backup)
+THE_ODDS_API_LEGACY_KEYS = [
     "6a1c0078b3ed09b42fbacee8f07e7cc3",
     "4949c49070dd3eff2113bd1a07293165",
     "0ecb237829d0f800181538e1a4fa2494",
@@ -26,7 +52,15 @@ API_KEYS_ODDS = [
     "713146de690026b224dd8bbf0abc0339"
 ]
 
-TELEGRAM_TOKEN = "8185027087:AAH1JQJKtlWy_oUQpAvqvHEsFIVOK3ScYBc"
+# Configurações de Tokens do Telegram
+TELEGRAM_TOKENS = {
+    "bot1": "8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A",
+    "bot2": "8185027087:AAH1JQJKtlWy_oUQpAvqvHEsFIVOK3ScYBc",
+    "bot3": "8413563055:AAGyovCDMJOxiAukTbXwaJPm3ZDckIf7qJU"
+}
+
+# Usando Bot2 como principal (específico do auditor)
+TELEGRAM_TOKEN = TELEGRAM_TOKENS["bot2"]
 CHAT_ID_ADMIN = "-1003814625223"
 DB_FILE = "probum.db"
 
@@ -34,15 +68,180 @@ MIN_AMOSTRAS_PADRAO = 10
 LIMITE_WINRATE_ALERTA = 35.0
 LIMITE_ROI_ALERTA = -10.0
 
-# Controle de chaves
-chave_atual = 0
-chaves_falhas = set()
-api_lock = asyncio.Lock()
-last_request_time = 0
+# Rate limiting
 REQUEST_DELAY = 1.0
 
+# Limites por provedor
+MAX_REQ_POR_CHAVE_DIA = {
+    "odds_api": 2400,        # 100/hora * 24 = 2400/dia
+    "sgo": 1000,             # 1.000 objetos/mês
+    "the_odds_token": 500,   # Estimado conservador
+    "the_odds_api_legacy": 80
+}
+
+# Controle global
+api_lock = asyncio.Lock()
+request_count = {}
+last_request_time = 0
+chaves_falhas = {}  # {provider: {chave: timestamp_falha}}
+provedores_falhos = set()
+
+# Índices de rotação para cada provedor
+indice_chaves = {
+    "odds_api": 0,
+    "sgo": 0,
+    "the_odds_token": 0,
+    "the_odds_api_legacy": 0
+}
+
 # ==========================================
-# ESTRUTURAS
+# SISTEMA DE HEALTH CHECK PARA PROVEDORES
+# ==========================================
+
+@dataclass
+class ProvedorHealth:
+    """Monitora saúde de cada provedor para decisões inteligentes de failover"""
+    latencias: List[float] = field(default_factory=list)
+    erros_consecutivos: int = 0
+    sucessos_consecutivos: int = 0
+    ultimo_sucesso: datetime = field(default_factory=datetime.now)
+    score: float = 100.0  # 0-100
+    total_requisicoes: int = 0
+    total_erros: int = 0
+    
+    def registrar_sucesso(self, latencia_ms: float):
+        self.latencias.append(latencia_ms)
+        if len(self.latencias) > 10:
+            self.latencias.pop(0)
+        self.erros_consecutivos = 0
+        self.sucessos_consecutivos += 1
+        self.ultimo_sucesso = datetime.now()
+        self.score = min(100.0, self.score + 10.0)
+        self.total_requisicoes += 1
+    
+    def registrar_erro(self):
+        self.erros_consecutivos += 1
+        self.sucessos_consecutivos = 0
+        penalidade = 15 * self.erros_consecutivos
+        self.score = max(0.0, self.score - penalidade)
+        self.total_requisicoes += 1
+        self.total_erros += 1
+    
+    def esta_saudavel(self) -> bool:
+        # Se score < 30 ou 3+ erros consecutivos, considera "quebrado"
+        return self.score > 30 and self.erros_consecutivos < 3
+    
+    def latencia_media(self) -> float:
+        if not self.latencias:
+            return 0.0
+        return statistics.mean(self.latencias)
+    
+    def taxa_erro(self) -> float:
+        if self.total_requisicoes == 0:
+            return 0.0
+        return (self.total_erros / self.total_requisicoes) * 100
+
+# ==========================================
+# SISTEMA DE CACHE DISTRIBUÍDO DE ODDS
+# ==========================================
+
+class OddsCache:
+    """Cache compartilhado de odds para economizar requisições entre bots"""
+    
+    def __init__(self, db_file="odds_cache.db"):
+        self.db = db_file
+        self.init_db()
+        self.cache_hits = 0
+        self.cache_misses = 0
+    
+    def init_db(self):
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS odds_cache (
+                jogo_id TEXT PRIMARY KEY,
+                liga TEXT,
+                esporte TEXT,
+                dados_json TEXT,
+                provedor TEXT,
+                timestamp REAL,
+                ttl INTEGER DEFAULT 300
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_liga ON odds_cache(liga)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_timestamp ON odds_cache(timestamp)
+        """)
+        conn.commit()
+        conn.close()
+    
+    def get(self, jogo_id: str) -> Optional[dict]:
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT dados_json, timestamp, ttl FROM odds_cache WHERE jogo_id=?",
+            (jogo_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            dados, ts, ttl = row
+            agora = datetime.now().timestamp()
+            if agora - ts < ttl:
+                self.cache_hits += 1
+                return json.loads(dados)
+        
+        self.cache_misses += 1
+        return None
+    
+    def set(self, jogo_id: str, dados: dict, provedor: str, ttl: int = 300):
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO odds_cache 
+            (jogo_id, liga, esporte, dados_json, provedor, timestamp, ttl)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            jogo_id,
+            dados.get("sport_key", "unknown"),
+            dados.get("sport_title", "unknown"),
+            json.dumps(dados),
+            provedor,
+            datetime.now().timestamp(),
+            ttl
+        ))
+        conn.commit()
+        conn.close()
+    
+    def limpar_expirados(self):
+        """Remove entradas expiradas do cache"""
+        conn = sqlite3.connect(self.db)
+        cursor = conn.cursor()
+        agora = datetime.now().timestamp()
+        cursor.execute("DELETE FROM odds_cache WHERE ? - timestamp > ttl", (agora,))
+        deletados = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deletados
+    
+    def estatisticas(self) -> dict:
+        total = self.cache_hits + self.cache_misses
+        hit_rate = (self.cache_hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self.cache_hits,
+            "misses": self.cache_misses,
+            "hit_rate": hit_rate,
+            "economia_requisicoes": self.cache_hits
+        }
+
+# Instância global do cache
+odds_cache = OddsCache()
+
+# ==========================================
+# ESTRUTURAS DE DADOS
 # ==========================================
 
 @dataclass
@@ -68,6 +267,116 @@ class AnalisePadrao:
     lucro_total: float
     tendencia: str
     sugestao: str
+
+# ==========================================
+# SISTEMA DE FAILOVER MULTIPROVIDER
+# ==========================================
+
+class APIProviderManager:
+    """Gerencia múltiplos provedores de API com failover automático e health check"""
+    
+    PRIORIDADE_PROVEDORES = [
+        "odds_api",           # 1º: Odds-API.io (melhor custo-benefício)
+        "sgo",                # 2º: Sports Game Odds
+        "the_odds_token",     # 3º: The Odds Token
+        "the_odds_api_legacy", # 4º: The Odds API (legado)
+    ]
+    
+    def __init__(self):
+        self.chaves_por_provedor = {
+            "odds_api": ODDS_API_KEYS,
+            "sgo": SGO_API_KEYS,
+            "the_odds_token": THE_ODDS_TOKEN_KEYS,
+            "the_odds_api_legacy": THE_ODDS_API_LEGACY_KEYS
+        }
+        
+        self.provedor_atual_idx = 0
+        self.health_por_provedor = {
+            p: ProvedorHealth() for p in self.PRIORIDADE_PROVEDORES
+        }
+    
+    def get_provedor_atual(self) -> Optional[str]:
+        """Retorna o provedor mais saudável baseado em health score"""
+        disponiveis = [p for p in self.PRIORIDADE_PROVEDORES 
+                      if p not in provedores_falhos and self.health_por_provedor[p].esta_saudavel()]
+        
+        if not disponiveis:
+            # Se nenhum está saudável, tenta qualquer um disponível
+            disponiveis = [p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos]
+        
+        if not disponiveis:
+            return None
+        
+        # Ordena por health score (maior primeiro)
+        disponiveis.sort(key=lambda p: self.health_por_provedor[p].score, reverse=True)
+        return disponiveis[0]
+    
+    def proximo_provedor(self):
+        """Avança para o próximo provedor na lista de prioridade"""
+        self.provedor_atual_idx = (self.provedor_atual_idx + 1) % len(self.PRIORIDADE_PROVEDORES)
+    
+    def get_chave_valida(self, provedor: str) -> Tuple[Optional[str], int]:
+        """Retorna uma chave válida e o índice para o provedor especificado"""
+        chaves = self.chaves_por_provedor.get(provedor, [])
+        if not chaves:
+            return None, 0
+        
+        tentativas = 0
+        while tentativas < len(chaves):
+            idx = indice_chaves[provedor] % len(chaves)
+            chave = chaves[idx]
+            
+            # Verifica se chave não falhou recentemente (última hora)
+            falhas_provedor = chaves_falhas.get(provedor, {})
+            ultima_falha = falhas_provedor.get(chave, 0)
+            
+            if (datetime.now().timestamp() - ultima_falha) > 3600:  # 1 hora
+                return chave, idx
+            
+            indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(chaves)
+            tentativas += 1
+        
+        return None, 0
+    
+    def marcar_chave_falha(self, provedor: str, chave: str):
+        """Marca uma chave como falha"""
+        if provedor not in chaves_falhas:
+            chaves_falhas[provedor] = {}
+        chaves_falhas[provedor][chave] = datetime.now().timestamp()
+        self.health_por_provedor[provedor].registrar_erro()
+        print(f"⚠️ Auditor: Chave {chave[:8]}... do {provedor} marcada como falha (Score: {self.health_por_provedor[provedor].score:.0f})")
+    
+    def marcar_sucesso(self, provedor: str, latencia_ms: float):
+        """Registra sucesso no health check"""
+        self.health_por_provedor[provedor].registrar_sucesso(latencia_ms)
+    
+    def marcar_provedor_offline(self, provedor: str):
+        """Marca todo o provedor como offline"""
+        provedores_falhos.add(provedor)
+        print(f"🚫 Auditor: Provedor {provedor} marcado como offline temporariamente")
+        
+        # Agenda reativação em 30 minutos
+        asyncio.create_task(self.reativar_provedor(provedor, 1800))
+    
+    async def reativar_provedor(self, provedor: str, delay: int):
+        """Reativa um provedor após delay"""
+        await asyncio.sleep(delay)
+        if provedor in provedores_falhos:
+            provedores_falhos.remove(provedor)
+            self.health_por_provedor[provedor].score = 50  # Reset para valor médio
+            print(f"✅ Auditor: Provedor {provedor} reativado")
+    
+    def get_health_report(self) -> str:
+        """Gera relatório de saúde dos provedores"""
+        linhas = ["📊 Health Check Provedores:"]
+        for provedor in self.PRIORIDADE_PROVEDORES:
+            h = self.health_por_provedor[provedor]
+            status = "🟢" if h.esta_saudavel() else "🔴"
+            linhas.append(f"{status} {provedor}: Score={h.score:.0f} | Lat={h.latencia_media():.0f}ms | Erros={h.erros_consecutivos}")
+        return "\n".join(linhas)
+
+# Instância global do gerenciador
+provider_manager = APIProviderManager()
 
 # ==========================================
 # BANCO DE DADOS
@@ -101,7 +410,8 @@ def inicializar_banco():
             horario_envio TEXT,
             tier_liga REAL,
             linha REAL,
-            processado_em TEXT
+            processado_em TEXT,
+            fonte_dados TEXT
         )
     """)
     
@@ -135,25 +445,38 @@ def inicializar_banco():
     conn.close()
 
 # ==========================================
-# TELEGRAM
+# TELEGRAM - MULTIBOT FAILOVER
 # ==========================================
 
 async def enviar_telegram_async(session: aiohttp.ClientSession, texto: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID_ADMIN,
-        "text": texto,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    try:
-        async with session.post(url, json=payload, timeout=10) as r:
-            return r.status == 200
-    except:
-        return False
+    """Envia mensagem com failover entre 3 bots"""
+    
+    # Ordem: Bot2 (principal) → Bot1 → Bot3
+    bots = [TELEGRAM_TOKENS["bot2"], TELEGRAM_TOKENS["bot1"], TELEGRAM_TOKENS["bot3"]]
+    
+    for token in bots:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID_ADMIN,
+            "text": texto,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        try:
+            async with session.post(url, json=payload, timeout=10) as r:
+                if r.status == 200:
+                    return True
+                else:
+                    print(f"⚠️ Auditor: Bot falhou com status {r.status}, tentando próximo...")
+        except Exception as e:
+            print(f"Erro Telegram Auditor: {e}")
+            continue
+    
+    print("❌ Auditor: Todos os bots falharam!")
+    return False
 
 # ==========================================
-# API COM FAILOVER AUTOMÁTICO
+# API COM FAILOVER MULTIPROVIDER E CACHE
 # ==========================================
 
 async def rate_limit():
@@ -164,54 +487,103 @@ async def rate_limit():
         await asyncio.sleep(REQUEST_DELAY - tempo_passado)
     last_request_time = datetime.now().timestamp()
 
-def get_proxima_chave():
-    """Retorna próxima chave válida"""
-    global chave_atual
-    tentativas = 0
-    while tentativas < len(API_KEYS_ODDS):
-        chave = API_KEYS_ODDS[chave_atual]
-        if chave not in chaves_falhas:
-            return chave
-        chave_atual = (chave_atual + 1) % len(API_KEYS_ODDS)
-        tentativas += 1
-    return None
-
-async def obter_resultados_api(session: aiohttp.ClientSession, esporte: str):
-    global chave_atual, chaves_falhas
+async def obter_resultados_api_multiprovider(session: aiohttp.ClientSession, esporte: str, tentativas_max: int = 10):
+    """
+    Obtém resultados de múltiplos provedores com failover automático, health check e cache
+    """
     
-    url = f"https://api.the-odds-api.com/v4/sports/{esporte}/scores/"
-    params = {"daysFrom": 3, "dateFormat": "iso"}
+    # Primeiro, verifica cache
+    # Nota: Para resultados/scores, usamos TTL menor (60s) pois mudam frequentemente
+    cache_key = f"resultados_{esporte}"
+    cached = odds_cache.get(cache_key)
+    if cached:
+        print(f"✅ Auditor: Dados obtidos do CACHE para {esporte}")
+        return cached
     
-    # Reset chaves se muitas falharam
-    if len(chaves_falhas) >= len(API_KEYS_ODDS) - 2:
-        chaves_falhas.clear()
-    
-    for tentativa in range(len(API_KEYS_ODDS)):
-        await rate_limit()
+    for tentativa in range(tentativas_max):
+        provedor = provider_manager.get_provedor_atual()
         
-        async with api_lock:
-            chave = get_proxima_chave()
-            if not chave:
-                print("❌ Todas as chaves falharam!")
-                return []
-            params["apiKey"] = chave
-        
-        try:
-            async with session.get(url, params=params, timeout=15) as r:
-                if r.status == 200:
-                    return await r.json()
-                elif r.status in [401, 429]:
-                    print(f"⚠️ Auditor - Chave falhou: {r.status}")
-                    async with api_lock:
-                        chaves_falhas.add(chave)
-                        chave_atual = (chave_atual + 1) % len(API_KEYS_ODDS)
-                else:
-                    return await r.json()
-        except Exception as e:
-            print(f"Erro API Auditor: {e}")
+        if not provedor:
+            print("❌ Auditor: Nenhum provedor disponível! Aguardando...")
+            await asyncio.sleep(300)
+            provedores_falhos.clear()
             continue
         
-        await asyncio.sleep(1)
+        chave, idx = provider_manager.get_chave_valida(provedor)
+        
+        if not chave:
+            print(f"⚠️ Auditor: Todas as chaves do {provedor} esgotadas")
+            provider_manager.marcar_provedor_offline(provedor)
+            provider_manager.proximo_provedor()
+            continue
+        
+        await rate_limit()
+        
+        inicio_req = time.time()
+        
+        # Constrói URL conforme o provedor
+        if provedor in ["odds_api", "the_odds_token", "the_odds_api_legacy"]:
+            url = f"https://api.the-odds-api.com/v4/sports/{esporte}/scores/"
+            params = {
+                "apiKey": chave,
+                "daysFrom": 3,
+                "dateFormat": "iso"
+            }
+        elif provedor == "sgo":
+            url = "https://api.sportsgameodds.com/v1/results"
+            params = {
+                "apiKey": chave,
+                "sport": esporte.replace("basketball_", "").replace("soccer_", ""),
+                "days": 3
+            }
+        else:
+            url = f"https://api.the-odds-api.com/v4/sports/{esporte}/scores/"
+            params = {"apiKey": chave, "daysFrom": 3, "dateFormat": "iso"}
+        
+        try:
+            hoje = datetime.now().strftime("%Y%m%d")
+            chave_hoje = f"{provedor}_{chave}_{hoje}"
+            
+            async with api_lock:
+                request_count[chave_hoje] = request_count.get(chave_hoje, 0) + 1
+                
+                if request_count[chave_hoje] >= MAX_REQ_POR_CHAVE_DIA.get(provedor, 80):
+                    print(f"⚠️ Auditor: Limite diário atingido para {provedor}")
+                    provider_manager.marcar_chave_falha(provedor, chave)
+                    indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(provider_manager.chaves_por_provedor[provedor])
+                    continue
+            
+            async with session.get(url, params=params, timeout=15) as r:
+                latencia_ms = (time.time() - inicio_req) * 1000
+                
+                if r.status == 200:
+                    dados = await r.json()
+                    provider_manager.marcar_sucesso(provedor, latencia_ms)
+                    print(f"✅ Auditor: Dados obtidos via {provedor} em {latencia_ms:.0f}ms (Score: {provider_manager.health_por_provedor[provedor].score:.0f})")
+                    
+                    # Salva no cache (TTL curto para resultados: 60 segundos)
+                    odds_cache.set(cache_key, {"data": dados, "timestamp": datetime.now().timestamp()}, provedor, ttl=60)
+                    
+                    return dados
+                elif r.status in [401, 429, 403]:
+                    print(f"⚠️ Auditor: {provedor} retornou {r.status}")
+                    provider_manager.marcar_chave_falha(provedor, chave)
+                    indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(provider_manager.chaves_por_provedor[provedor])
+                else:
+                    print(f"⚠️ Auditor: {provedor} retornou {r.status}, tentando próximo...")
+                    provider_manager.health_por_provedor[provedor].registrar_erro()
+                    provider_manager.proximo_provedor()
+                    
+        except asyncio.TimeoutError:
+            print(f"⏱️ Auditor: Timeout no {provedor}")
+            provider_manager.health_por_provedor[provedor].registrar_erro()
+            provider_manager.proximo_provedor()
+        except Exception as e:
+            print(f"Erro Auditor no {provedor}: {e}")
+            provider_manager.health_por_provedor[provedor].registrar_erro()
+            provider_manager.proximo_provedor()
+        
+        await asyncio.sleep(0.5)
     
     return []
 
@@ -323,7 +695,7 @@ def resolver_aposta_completa(aposta: sqlite3.Row, placar: Dict) -> Tuple[str, fl
     return status, lucro, detalhes
 
 # ==========================================
-# ANÁLISE ESTATÍSTICA
+# ANÁLISE ESTATÍSTICA AVANÇADA
 # ==========================================
 
 def calcular_metricas(apostas: List[sqlite3.Row]) -> MetricasPeriodo:
@@ -380,10 +752,41 @@ def analisar_padroes(conn: sqlite3.Connection, dias_historico: int = 14) -> List
             elif m.winrate > 60 and m.roi > 10:
                 analises.append(AnalisePadrao('liga', liga, len(lista), m.winrate, m.roi, m.lucro_total, 'positiva', f"Focar em {liga} (Winrate: {m.winrate:.1f}%)"))
     
+    # Por fonte de dados (provedor de odds)
+    fontes = defaultdict(list)
+    for a in apostas:
+        fonte = a['fonte_dados'] or 'desconhecida'
+        fontes[fonte].append(a)
+    for fonte, lista in fontes.items():
+        if len(lista) >= MIN_AMOSTRAS_PADRAO:
+            m = calcular_metricas(lista)
+            if m.roi < LIMITE_ROI_ALERTA:
+                analises.append(AnalisePadrao('fonte', fonte, len(lista), m.winrate, m.roi, m.lucro_total, 'negativa', f"Revisar provedor {fonte} (ROI: {m.roi:.1f}%)"))
+            elif m.roi > 15:
+                analises.append(AnalisePadrao('fonte', fonte, len(lista), m.winrate, m.roi, m.lucro_total, 'positiva', f"Priorizar provedor {fonte} (ROI: {m.roi:.1f}%)"))
+    
+    # Por horário do dia (identificar melhores horários)
+    horarios = defaultdict(list)
+    for a in apostas:
+        try:
+            hora = datetime.strptime(a['data_hora'], '%d/%m/%Y').hour if ':' not in a['data_hora'] else datetime.strptime(a['data_hora'], '%d/%m/%Y %H:%M').hour
+            faixa = f"{hora:02d}h-{(hora+2):02d}h"
+            horarios[faixa].append(a)
+        except:
+            pass
+    
+    for faixa, lista in horarios.items():
+        if len(lista) >= MIN_AMOSTRAS_PADRAO:
+            m = calcular_metricas(lista)
+            if m.roi < LIMITE_ROI_ALERTA:
+                analises.append(AnalisePadrao('horario', faixa, len(lista), m.winrate, m.roi, m.lucro_total, 'negativa', f"Evitar apostas {faixa} (ROI: {m.roi:.1f}%)"))
+            elif m.roi > 15:
+                analises.append(AnalisePadrao('horario', faixa, len(lista), m.winrate, m.roi, m.lucro_total, 'positiva', f"Focar em apostas {faixa} (ROI: {m.roi:.1f}%)"))
+    
     return analises
 
 # ==========================================
-# AUDITORIA
+# AUDITORIA COMPLETA
 # ==========================================
 
 async def rotina_auditoria_completa(session: aiohttp.ClientSession):
@@ -395,7 +798,7 @@ async def rotina_auditoria_completa(session: aiohttp.ClientSession):
     pendentes = cursor.fetchall()
     
     if not pendentes:
-        print("☕ Nenhuma aposta pendente.")
+        print("☕ Auditor: Nenhuma aposta pendente.")
         conn.close()
         return
     
@@ -405,7 +808,7 @@ async def rotina_auditoria_completa(session: aiohttp.ClientSession):
     resultados_por_esporte = {}
     
     for esporte in esportes:
-        resultados = await obter_resultados_api(session, esporte)
+        resultados = await obter_resultados_api_multiprovider(session, esporte)
         if resultados:
             resultados_por_esporte[esporte] = resultados
     
@@ -453,7 +856,12 @@ async def rotina_auditoria_completa(session: aiohttp.ClientSession):
             await enviar_alertas(session, alertas_novos)
     
     conn.close()
-    print(f"✅ {len(atualizadas)} apostas atualizadas.")
+    print(f"✅ Auditor: {len(atualizadas)} apostas atualizadas.")
+    
+    # Limpar cache expirado a cada execução
+    limpos = odds_cache.limpar_expirados()
+    if limpos > 0:
+        print(f"🧹 Auditor: {limpos} entradas de cache removidas")
 
 async def enviar_alertas(session: aiohttp.ClientSession, alertas: List[AnalisePadrao]):
     texto = "🚨 <b>ALERTAS DO SISTEMA</b>\n\nPadrões detectados:\n\n"
@@ -464,7 +872,7 @@ async def enviar_alertas(session: aiohttp.ClientSession, alertas: List[AnalisePa
     await enviar_telegram_async(session, texto)
 
 # ==========================================
-# RELATÓRIOS
+# RELATÓRIOS AVANÇADOS
 # ==========================================
 
 async def gerar_relatorio_diario(session: aiohttp.ClientSession):
@@ -490,6 +898,9 @@ async def gerar_relatorio_diario(session: aiohttp.ClientSession):
     padroes = analisar_padroes(conn, dias_historico=7)
     oportunidades = [p for p in padroes if p.tendencia == 'positiva']
     problemas = [p for p in padroes if p.tendencia == 'negativa']
+    
+    # Estatísticas de cache
+    cache_stats = odds_cache.estatisticas()
     
     emoji = "💰" if metricas.lucro_total >= 0 else "🩸"
     
@@ -521,6 +932,12 @@ async def gerar_relatorio_diario(session: aiohttp.ClientSession):
         for prob in problemas[:2]:
             texto += f"🔍 {prob.sugestao}\n"
         texto += "\n"
+    
+    # Health check dos provedores
+    texto += f"<b>🔧 INFRAESTRUTURA</b>\n"
+    texto += f"💾 Cache: {cache_stats['hit_rate']:.1f}% hit rate ({cache_stats['economia_requisicoes']} reqs economizadas)\n"
+    health_report = provider_manager.get_health_report().replace("\n", "\n")
+    texto += f"{health_report}\n\n"
     
     inicio_mes = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(day=1).strftime('%d/%m/%Y')
     cursor.execute("SELECT * FROM operacoes_tipster WHERE data_hora >= ? AND status!='PENDENTE'", (inicio_mes,))
@@ -566,6 +983,17 @@ async def gerar_relatorio_semanal(session: aiohttp.ClientSession):
     melhor_dia = max(lucro_por_dia.items(), key=lambda x: x[1])
     pior_dia = min(lucro_por_dia.items(), key=lambda x: x[1])
     
+    # Análise por provedor na semana
+    cursor.execute("""
+        SELECT fonte_dados, COUNT(*) as total, 
+               SUM(CASE WHEN status='GREEN' THEN 1 ELSE 0 END) as greens,
+               SUM(lucro) as lucro_total
+        FROM operacoes_tipster 
+        WHERE data_hora >= ? AND status != 'PENDENTE' AND fonte_dados IS NOT NULL
+        GROUP BY fonte_dados
+    """, (inicio_semana,))
+    por_provedor = cursor.fetchall()
+    
     texto = (
         f"📈 <b>RELATÓRIO SEMANAL</b>\n\n"
         f"<b>Período:</b> {inicio_semana} a {hoje.strftime('%d/%m/%Y')}\n\n"
@@ -576,8 +1004,18 @@ async def gerar_relatorio_semanal(session: aiohttp.ClientSession):
         f"<b>📅 Por Dia</b>\n"
         f"🟢 Melhor: {melhor_dia[0]} ({melhor_dia[1]:+.2f}u)\n"
         f"🔴 Pior: {pior_dia[0]} ({pior_dia[1]:+.2f}u)\n\n"
-        f"<b>💡 Recomendações</b>\n"
     )
+    
+    if por_provedor:
+        texto += f"<b>🔌 Performance por Provedor</b>\n"
+        for row in por_provedor:
+            nome, total, greens, lucro = row
+            wr = (greens / total * 100) if total > 0 else 0
+            emoji = "🟢" if lucro > 0 else "🔴"
+            texto += f"{emoji} {nome}: {total} bets | WR: {wr:.1f}% | Lucro: {lucro:+.2f}u\n"
+        texto += "\n"
+    
+    texto += f"<b>💡 Recomendações</b>\n"
     
     padroes = analisar_padroes(conn, dias_historico=7)
     positivos = [p for p in padroes if p.tendencia == 'positiva']
@@ -597,29 +1035,65 @@ async def gerar_relatorio_semanal(session: aiohttp.ClientSession):
     await enviar_telegram_async(session, texto)
 
 # ==========================================
-# LOOP
+# LOOP PRINCIPAL
 # ==========================================
 
 async def loop_principal():
     inicializar_banco()
+    
+    print("🚀 Bot Auditor iniciado com sistema multiprovider!")
+    print(f"🔑 Provedores configurados: {len(provider_manager.PRIORIDADE_PROVEDORES)}")
+    print(f"🔑 Total de chaves: {sum(len(v) for v in provider_manager.chaves_por_provedor.values())}")
+    print(f"💾 Cache: odds_cache.db (TTL 60s para resultados)")
+    print(f"🤖 Bots Telegram: 3 (failover automático)")
+    print(f"📊 Health Check: Ativo com score dinâmico")
+    print("=" * 50)
+    
     async with aiohttp.ClientSession() as session:
         while True:
             agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            
+            # Executa auditoria a cada hora
             await rotina_auditoria_completa(session)
             
+            # Relatório diário às 9h
             if agora.hour == 9 and agora.minute < 5:
                 await gerar_relatorio_diario(session)
-                await asyncio.sleep(300)
+                await asyncio.sleep(300)  # Evita múltiplos envios
             
+            # Relatório semanal às 10h de segunda
             if agora.weekday() == 0 and agora.hour == 10 and agora.minute < 5:
                 await gerar_relatorio_semanal(session)
                 await asyncio.sleep(300)
             
-            await asyncio.sleep(3600)
+            # Limpa provedores falhos a cada ciclo
+            if provedores_falhos:
+                print(f"🔄 Auditor: Limpando {len(provedores_falhos)} provedores falhos")
+                provedores_falhos.clear()
+            
+            # Log de uso e health check
+            hoje = datetime.now().strftime("%Y%m%d")
+            total_req = sum(v for k, v in request_count.items() if k.endswith(f"_{hoje}"))
+            cache_stats = odds_cache.estatisticas()
+            
+            print(f"📊 Auditor: Total requisições hoje: {total_req}")
+            print(f"💾 Cache: {cache_stats['hit_rate']:.1f}% hit rate, {cache_stats['economia_requisicoes']} economizadas")
+            print(provider_manager.get_health_report())
+            print(f"💤 Aguardando próxima auditoria em 1h...")
+            print("=" * 50)
+            
+            await asyncio.sleep(3600)  # Aguarda 1 hora
 
 # ==========================================
 # START
 # ==========================================
 
 if __name__ == "__main__":
-    asyncio.run(loop_principal())
+    try:
+        asyncio.run(loop_principal())
+    except KeyboardInterrupt:
+        print("\n🛑 Bot Auditor encerrado pelo usuário")
+        # Estatísticas finais
+        print(f"\n📊 Estatísticas finais:")
+        print(f"Cache: {odds_cache.estatisticas()}")
+        print(provider_manager.get_health_report())
