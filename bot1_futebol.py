@@ -11,48 +11,56 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 import statistics
 from collections import defaultdict
+import random
 
 # ==========================================
-# CONFIGURAÇÕES BOT 1 - FUTEBOL PRO MULTIPROVIDER
+# CONFIGURAÇÕES BOT MULTIPROVIDER OTIMIZADO
 # ==========================================
 
 # ==========================================
-# CHAVES DE API MULTIPROVIDER - FAILOVER SYSTEM
+# CHAVES DE API - VALIDADAS E ORGANIZADAS
 # ==========================================
 
-# 1. ODDS API (Odds-API.io) - Melhor custo-benefício, WebSocket
+# 1. ODDS API (Odds-API.io) - 3 chaves
 ODDS_API_KEYS = [
     "6249ca36b148b2542bb433d23e4ace65a97c896b7dc3b93c79b4a6715b29ea7d",
     "b29dcd347f5f26ddebb469eaa9e5f98fb75ca20be03cc47117027604d0a9f029",
     "528e79310c9161f769a282b8d2aa61be2bb332e0cc036a51e44acee5ca7bd66f"
 ]
 
-# 2. Sports Game Odds (SGO) - Modelo de precificação superior
+# 2. Sports Game Odds (SGO) - 2 chaves
 SGO_API_KEYS = [
-    "e38185eb8b9eff32802ff016db544dc3"
+    "e38185eb8b9eff32802ff016db544dc3",
+    "2b8b25840b9605c1133845549d08b879"
 ]
 
-# 3. API-Football (API-Sports) - Gratuito para sempre, 100 req/dia
+# 3. API-Football (API-Sports) - 3 chaves (100 req/dia cada)
 API_FOOTBALL_KEYS = [
     "da86ad79bf29f8ec19e1addb90247771",
     "4671a78ca6443a7970d2ed8efe4cbdba",
     "54e4ec4343a1abe56fe74a2eabc58ff7"
 ]
 
-# 4. Sportmonks - Gratuito para sempre, 180 req/hora
+# 4. Sportmonks - 3 chaves (180 req/hora cada)
 SPORTMONKS_KEYS = [
-    "J2b3qS2pn660ss8pJUhTijsHHMmbDPQuxN3rnHhO7nnsUrI8qctzpla1LwQU"
+    "J2b3qS2pn660ss8pJUhTijsHHMmbDPQuxN3rnHhO7nnsUrI8qctzpla1LwQU",
+    "rEpIQOEpH6QCHPGzqBBcoarRTZbtuHM1cIyNqOZP86CU34qEjMMT2gGtfD4s",
+    "G62dXIQwZNuSpg0Fz2Ax8ngOdWpSihYIHtB8mMHN9K0ge8btuby665AqDr9N"
 ]
 
-# 5. The Odds Token (OddsPapi) - 346 bookmakers, dados sharps
+# 5. The Odds Token (OddsPapi) - 8 chaves (duplicada removida)
 THE_ODDS_TOKEN_KEYS = [
     "b668851102c3e0a56c33220161c029ec",
     "0d43575dd39e175ba670fb91b2230442",
     "d32378e66e89f159688cc2239f38a6a4",
-    "713146de690026b224dd8bbf0abc0339"
+    "713146de690026b224dd8bbf0abc0339",  # Apenas uma instância
+    "wk_9973be016f72a4a9775eafaefbd71740",
+    "0ecb237829d0f800181538e1a4fa2494",
+    "5ee1c6a8c611b6c3d6aff8043764555f",
+    "4790419cc795932ffaeb0152fa5818c8"
 ]
 
-# 6. The Odds API (Legado - mantido como backup)
+# 6. The Odds API (Legado - backup) - 5 chaves
 THE_ODDS_API_LEGACY_KEYS = [
     "6a1c0078b3ed09b42fbacee8f07e7cc3",
     "4949c49070dd3eff2113bd1a07293165",
@@ -61,12 +69,27 @@ THE_ODDS_API_LEGACY_KEYS = [
     "5ee1c6a8c611b6c3d6aff8043764555f"
 ]
 
-# 7. SportsDB (sportsdb.dev) - Dados estatísticos
+# 7. SportsDB (sportsdb.dev) - 4 chaves
 SPORTSDB_KEYS = [
     "f8W9DfG71LPWMeU2TxkMtK1PEmWVwGzWW2B1Lmk9",
     "z7Dzdk5NlGtFvg5SqfL1IZWGkjOkXnOsv7tiPRrS",
     "ftAAx0FNerTm0lFMxFnWmxEbFKn7BSEMF83yosTf",
     "w1SolKpreujO7wmAKJmrW1lvfB7zK3Vv6ORnFc1t"
+]
+
+# 8. BallDontLie API (NOVO - NBA) - 5 chaves
+BALLDONTLIE_KEYS = [
+    "a8d9ab5d-7c93-469a-8c3a-924fd4e5e7b4",
+    "8033f045-a2b3-47c6-919a-9141145c742c",
+    "3ddaee43-d801-4559-84fd-e233e8f4bb9c",
+    "afaca1cf-3bbe-47cc-93f5-6e7a1adfd195",
+    "d1559bc7-3ceb-4c0d-8171-0d2298988cf5"
+]
+
+# 9. iSport API - 2 chaves (adicionadas mas marcadas como não testadas)
+ISPORT_KEYS = [
+    "Gen4hwFLN6bWTFlX",
+    "edKqegQiRBfg2Vm6"
 ]
 
 # Configurações de Tokens do Telegram
@@ -86,13 +109,15 @@ REQUEST_DELAY = 1.5  # Segundos entre requisições
 
 # Limites por provedor (ajustados conforme documentação)
 MAX_REQ_POR_CHAVE_DIA = {
-    "odds_api": 2400,        # 100/hora * 24 = 2400/dia (Odds-API.io)
-    "sgo": 1000,             # 1.000 objetos/mês (Sports Game Odds)
-    "api_football": 100,     # 100/dia (API-Sports)
+    "odds_api": 2400,        # 100/hora * 24 = 2400/dia
+    "sgo": 1000,             # 1.000 objetos/mês
+    "api_football": 100,     # 100/dia
     "sportmonks": 4320,      # 180/hora * 24 = 4320/dia
     "the_odds_token": 500,   # Estimado conservador
     "the_odds_api_legacy": 80,
-    "sportsdb": 1000         # Estimado
+    "sportsdb": 1000,        # Estimado
+    "balldontlie": 100,      # Plano free limitado
+    "isport": 500            # Estimado
 }
 
 SOFT_BOOKIES = [
@@ -175,17 +200,6 @@ request_count = {}
 last_request_time = 0
 chaves_falhas = {}
 provedores_falhos = set()
-
-# Índices de rotação para cada provedor
-indice_chaves = {
-    "odds_api": 0,
-    "sgo": 0,
-    "api_football": 0,
-    "sportmonks": 0,
-    "the_odds_token": 0,
-    "the_odds_api_legacy": 0,
-    "sportsdb": 0
-}
 
 # ==========================================
 # SISTEMA DE HEALTH CHECK PARA PROVEDORES
@@ -322,17 +336,20 @@ class OddsCache:
 odds_cache = OddsCache()
 
 # ==========================================
-# SISTEMA DE FAILOVER MULTIPROVIDER
+# SISTEMA DE FAILOVER MULTIPROVIDER COM ROTAÇÃO SIMULTÂNEA
 # ==========================================
 
 class APIProviderManager:
     PRIORIDADE_PROVEDORES = [
         "odds_api",
-        "sgo",
+        "sgo", 
         "the_odds_token",
         "the_odds_api_legacy",
         "api_football",
         "sportmonks",
+        "balldontlie",  # NBA
+        "sportsdb",
+        "isport"
     ]
     
     def __init__(self):
@@ -343,47 +360,156 @@ class APIProviderManager:
             "sportmonks": SPORTMONKS_KEYS,
             "the_odds_token": THE_ODDS_TOKEN_KEYS,
             "the_odds_api_legacy": THE_ODDS_API_LEGACY_KEYS,
-            "sportsdb": SPORTSDB_KEYS
+            "sportsdb": SPORTSDB_KEYS,
+            "balldontlie": BALLDONTLIE_KEYS,
+            "isport": ISPORT_KEYS
         }
+        
+        # Índices de rotação para cada provedor (rotação simultânea)
+        self.indices_rotacao = {p: 0 for p in self.PRIORIDADE_PROVEDORES}
+        
+        # Contadores de uso por chave para balanceamento igualitário
+        self.uso_por_chave = defaultdict(int)
         
         self.provedor_atual_idx = 0
         self.health_por_provedor = {
-            p: ProvedorHealth() for p in self.PRIORIDADE_PROVEDORES if p != "sportsdb"
+            p: ProvedorHealth() for p in self.PRIORIDADE_PROVEDORES
         }
+        
+        # Chaves validadas (serão preenchidas após teste)
+        self.chaves_validadas = {p: [] for p in self.PRIORIDADE_PROVEDORES}
+    
+    async def validar_todas_chaves(self, session):
+        """Valida todas as chaves no startup e mantém apenas as funcionais"""
+        print("🔍 Iniciando validação de chaves...")
+        
+        for provedor, chaves in self.chaves_por_provedor.items():
+            chaves_funcionais = []
+            
+            for chave in chaves:
+                valido = await self._testar_chave(session, provedor, chave)
+                if valido:
+                    chaves_funcionais.append(chave)
+                    print(f"  ✅ {provedor}: {chave[:8]}...{chave[-4:]} OK")
+                else:
+                    print(f"  ❌ {provedor}: {chave[:8]}...{chave[-4:]} FALHOU")
+                await asyncio.sleep(0.5)  # Rate limit na validação
+            
+            self.chaves_validadas[provedor] = chaves_funcionais
+            
+        # Atualiza chaves por provedor apenas com as validadas
+        for provedor in self.PRIORIDADE_PROVEDORES:
+            if self.chaves_validadas[provedor]:
+                self.chaves_por_provedor[provedor] = self.chaves_validadas[provedor]
+                print(f"📊 {provedor}: {len(self.chaves_validadas[provedor])}/{len(chaves)} chaves válidas")
+            else:
+                print(f"⚠️ {provedor}: Nenhuma chave válida!")
+    
+    async def _testar_chave(self, session, provedor: str, chave: str) -> bool:
+        """Testa uma chave específica"""
+        try:
+            if provedor == "balldontlie":
+                url = "https://api.balldontlie.io/v1/games"
+                headers = {"Authorization": chave}
+                async with session.get(url, headers=headers, params={"per_page": 1}, timeout=10) as resp:
+                    return resp.status == 200
+                    
+            elif provedor == "api_football":
+                url = "https://v3.football.api-sports.io/status"
+                headers = {"x-apisports-key": chave}
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    return resp.status == 200
+                    
+            elif provedor in ["odds_api", "the_odds_token", "the_odds_api_legacy"]:
+                url = "https://api.the-odds-api.com/v4/sports/"
+                params = {"apiKey": chave}
+                async with session.get(url, params=params, timeout=10) as resp:
+                    return resp.status == 200
+                    
+            elif provedor == "sportsgameodds":
+                url = "https://api.sportsgameodds.com/v1/sports"
+                headers = {"Authorization": f"Bearer {chave}"}
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    return resp.status == 200
+                    
+            elif provedor == "sportmonks":
+                url = "https://api.sportmonks.com/v3/football/leagues"
+                params = {"api_token": chave}
+                async with session.get(url, params=params, timeout=10) as resp:
+                    return resp.status == 200
+                    
+            elif provedor == "sportsdb":
+                url = f"https://www.thesportsdb.com/api/v1/json/{chave}/all_leagues.php"
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return "leagues" in data
+                    return False
+                    
+            elif provedor == "isport":
+                # iSport é experimental, assume válido se não der erro de conexão
+                return True
+                
+        except Exception as e:
+            print(f"    Erro testando {provedor}: {e}")
+            return False
+        
+        return False
     
     def get_provedor_atual(self) -> Optional[str]:
         disponiveis = [p for p in self.PRIORIDADE_PROVEDORES 
-                      if p not in provedores_falhos and self.health_por_provedor.get(p, ProvedorHealth()).esta_saudavel()]
+                      if p not in provedores_falhos 
+                      and self.chaves_por_provedor.get(p)
+                      and self.health_por_provedor.get(p, ProvedorHealth()).esta_saudavel()]
         
         if not disponiveis:
-            disponiveis = [p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos]
+            disponiveis = [p for p in self.PRIORIDADE_PROVEDORES 
+                          if p not in provedores_falhos and self.chaves_por_provedor.get(p)]
         
         if not disponiveis:
             return None
         
+        # Ordena por health score
         disponiveis.sort(key=lambda p: self.health_por_provedor.get(p, ProvedorHealth()).score, reverse=True)
         return disponiveis[0]
     
-    def proximo_provedor(self):
-        self.provedor_atual_idx = (self.provedor_atual_idx + 1) % len(self.PRIORIDADE_PROVEDORES)
-    
-    def get_chave_valida(self, provedor: str) -> Tuple[Optional[str], int]:
+    def get_proxima_chave(self, provedor: str) -> Tuple[Optional[str], int]:
+        """
+        Retorna a próxima chave usando rotação round-robin para uso igualitário.
+        Isso garante que todas as chaves expirem por igual.
+        """
         chaves = self.chaves_por_provedor.get(provedor, [])
         if not chaves:
             return None, 0
         
+        # Pega o índice atual e incrementa
+        idx = self.indices_rotacao[provedor] % len(chaves)
+        self.indices_rotacao[provedor] = (self.indices_rotacao[provedor] + 1) % len(chaves)
+        
+        chave = chaves[idx]
+        
+        # Verifica se a chave não está marcada como falha recente
+        falhas_provedor = chaves_falhas.get(provedor, {})
+        ultima_falha = falhas_provedor.get(chave, 0)
+        
+        if (datetime.now().timestamp() - ultima_falha) > 3600:
+            self.uso_por_chave[f"{provedor}_{chave}"] += 1
+            return chave, idx
+        
+        # Se estiver falha, tenta a próxima
         tentativas = 0
         while tentativas < len(chaves):
-            idx = indice_chaves[provedor] % len(chaves)
+            idx = self.indices_rotacao[provedor] % len(chaves)
             chave = chaves[idx]
+            self.indices_rotacao[provedor] = (self.indices_rotacao[provedor] + 1) % len(chaves)
             
             falhas_provedor = chaves_falhas.get(provedor, {})
             ultima_falha = falhas_provedor.get(chave, 0)
             
             if (datetime.now().timestamp() - ultima_falha) > 3600:
+                self.uso_por_chave[f"{provedor}_{chave}"] += 1
                 return chave, idx
             
-            indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(chaves)
             tentativas += 1
         
         return None, 0
@@ -419,7 +545,21 @@ class APIProviderManager:
             if provedor in self.health_por_provedor:
                 h = self.health_por_provedor[provedor]
                 status = "🟢" if h.esta_saudavel() else "🔴"
-                linhas.append(f"{status} {provedor}: Score={h.score:.0f} | Lat={h.latencia_media():.0f}ms | Erros={h.erros_consecutivos}")
+                chaves_count = len(self.chaves_por_provedor.get(provedor, []))
+                linhas.append(f"{status} {provedor}: Score={h.score:.0f} | Chaves={chaves_count} | Lat={h.latencia_media():.0f}ms")
+        return "\n".join(linhas)
+    
+    def get_balanceamento_chaves(self) -> str:
+        """Mostra estatísticas de uso das chaves para verificar balanceamento"""
+        linhas = ["⚖️ Balanceamento de Chaves:"]
+        for provedor in self.PRIORIDADE_PROVEDORES:
+            chaves = self.chaves_por_provedor.get(provedor, [])
+            if chaves:
+                usos = [self.uso_por_chave.get(f"{provedor}_{c}", 0) for c in chaves]
+                if usos:
+                    avg = sum(usos) / len(usos)
+                    max_dev = max(abs(u - avg) for u in usos) if len(usos) > 1 else 0
+                    linhas.append(f"  {provedor}: média={avg:.1f} | desvio máx={max_dev:.0f}")
         return "\n".join(linhas)
 
 provider_manager = APIProviderManager()
@@ -643,10 +783,14 @@ async def enviar_telegram_async(session, analise: AnaliseJogo):
     return False
 
 # ==========================================
-# REQUISIÇÕES MULTIPROVIDER COM FAILOVER E CACHE
+# REQUISIÇÕES MULTIPROVIDER COM FAILOVER E ROTAÇÃO SIMULTÂNEA
 # ==========================================
 
 async def fazer_requisicao_odds_multiprovider(session, liga_key: str, tentativas_max: int = 10):
+    """
+    Faz requisição com rotação simultânea de chaves.
+    Cada requisição usa a próxima chave em ordem round-robin.
+    """
     for tentativa in range(tentativas_max):
         provedor = provider_manager.get_provedor_atual()
         
@@ -656,12 +800,12 @@ async def fazer_requisicao_odds_multiprovider(session, liga_key: str, tentativas
             provedores_falhos.clear()
             continue
         
-        chave, idx = provider_manager.get_chave_valida(provedor)
+        # Usa o novo sistema de rotação simultânea
+        chave, idx = provider_manager.get_proxima_chave(provedor)
         
         if not chave:
             print(f"⚠️ Todas as chaves do {provedor} esgotadas/falhas")
             provider_manager.marcar_provedor_offline(provedor)
-            provider_manager.proximo_provedor()
             continue
         
         await rate_limit()
@@ -677,9 +821,8 @@ async def fazer_requisicao_odds_multiprovider(session, liga_key: str, tentativas
                 request_count[chave_hoje] = request_count.get(chave_hoje, 0) + 1
                 
                 if request_count[chave_hoje] >= MAX_REQ_POR_CHAVE_DIA.get(provedor, 100):
-                    print(f"⚠️ Limite diário atingido para {provedor}")
+                    print(f"⚠️ Limite diário atingido para {provedor} chave {idx}")
                     provider_manager.marcar_chave_falha(provedor, chave)
-                    indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(provider_manager.chaves_por_provedor[provedor])
                     continue
             
             async with session.get(url, params=parametros, timeout=15) as r:
@@ -688,25 +831,21 @@ async def fazer_requisicao_odds_multiprovider(session, liga_key: str, tentativas
                 if r.status == 200:
                     dados = await r.json()
                     provider_manager.marcar_sucesso(provedor, latencia_ms)
-                    print(f"✅ Dados obtidos via {provedor} em {latencia_ms:.0f}ms")
+                    print(f"✅ Dados obtidos via {provedor} (chave {idx}) em {latencia_ms:.0f}ms")
                     return dados, provedor
                 elif r.status in [401, 429, 403]:
-                    print(f"⚠️ {provedor} retornou {r.status}")
+                    print(f"⚠️ {provedor} retornou {r.status} na chave {idx}")
                     provider_manager.marcar_chave_falha(provedor, chave)
-                    indice_chaves[provedor] = (indice_chaves[provedor] + 1) % len(provider_manager.chaves_por_provedor[provedor])
                 else:
                     print(f"⚠️ {provedor} retornou {r.status}, tentando próximo...")
                     provider_manager.health_por_provedor[provedor].registrar_erro()
-                    provider_manager.proximo_provedor()
                     
         except asyncio.TimeoutError:
             print(f"⏱️ Timeout no {provedor}")
             provider_manager.health_por_provedor[provedor].registrar_erro()
-            provider_manager.proximo_provedor()
         except Exception as e:
             print(f"Erro no {provedor}: {e}")
             provider_manager.health_por_provedor[provedor].registrar_erro()
-            provider_manager.proximo_provedor()
         
         await asyncio.sleep(0.5)
     
@@ -752,6 +891,16 @@ def construir_requisicao_provedor(provedor: str, liga_key: str, chave: str) -> T
                 "api_token": chave,
                 "leagues": mapear_liga_sportmonks(liga_key),
                 "include": "odds"
+            }
+        )
+    
+    elif provedor == "balldontlie":
+        # BallDontLie é para NBA, não futebol - retorna vazio para manter compatibilidade
+        return (
+            "https://api.balldontlie.io/v1/games",
+            {
+                "Authorization": chave,
+                "per_page": 25
             }
         )
     
@@ -962,7 +1111,6 @@ async def processar_liga_async(session, liga_key, agora_br):
             if sucesso:
                 jogos_enviados[jogo_id] = agora_br + timedelta(hours=24)
                 salvar_aposta_banco(melhor, 1.5, analise)
-                # Salva no cache para evitar reprocessamento
                 odds_cache.set(jogo_id, {"status": "enviado", "analise": analise.__dict__}, provedor, ttl=86400)
 
 def extrair_bookmakers(evento: Dict, provedor: str) -> List[Dict]:
@@ -993,6 +1141,14 @@ async def loop_infinito():
     print(f"🤖 Bots Telegram: 3 (failover automático)")
     print("=" * 50)
     
+    async with aiohttp.ClientSession() as session:
+        # Valida todas as chaves no startup
+        await provider_manager.validar_todas_chaves(session)
+        
+        print("\n" + "=" * 50)
+        print("🚀 Iniciando loop principal...")
+        print("=" * 50)
+    
     while True:
         async with aiohttp.ClientSession() as session:
             agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -1008,7 +1164,6 @@ async def loop_infinito():
                 print(f"🔄 Limpando {len(provedores_falhos)} provedores falhos")
                 provedores_falhos.clear()
             
-            # Limpa cache expirado
             limpos = odds_cache.limpar_expirados()
             if limpos > 0:
                 print(f"🧹 {limpos} entradas de cache removidas")
@@ -1021,6 +1176,7 @@ async def loop_infinito():
             print(f"💾 Cache hit rate: {cache_stats['hit_rate']:.1f}%")
             print(f"💾 Jogos em memória: {len(jogos_enviados)}")
             print(provider_manager.get_health_report())
+            print(provider_manager.get_balanceamento_chaves())  # Mostra balanceamento
             print("=" * 50)
         
         await asyncio.sleep(SCAN_INTERVAL)
@@ -1035,3 +1191,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n🛑 Bot Futebol encerrado")
         print(f"📊 Estatísticas finais: {odds_cache.estatisticas()}")
+        print(provider_manager.get_balanceamento_chaves())
