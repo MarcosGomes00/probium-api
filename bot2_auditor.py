@@ -10,8 +10,8 @@ from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 
 # CONFIGURAÇÕES
-ODDS_API_KEYS = ["6249ca36b148b2542bb433d23e4ace65a97c896b7dc3b93c79b4a6715b29ea7d","b29dcd347f5f26ddebb469eaa9e5f98fb75ca20be03cc47117027604d0a9f029","528e79310c9161f769a282b8d2aa61be2bb332e0cc036a51e44acee5ca7bd66f"]
-BALLDONTLIE_KEYS = ["a8d9ab5d-7c93-469a-8c3a-924fd4e5e7b4","8033f045-a2b3-47c6-919a-9141145c742c","3ddaee43-d801-4559-84fd-e233e8f4bb9c","afaca1cf-3bbe-47cc-93f5-6e7a1adfd195","d1559bc7-3ceb-4c0d-8171-0d2298988cf5"]
+ODDS_API_KEYS =["6249ca36b148b2542bb433d23e4ace65a97c896b7dc3b93c79b4a6715b29ea7d","b29dcd347f5f26ddebb469eaa9e5f98fb75ca20be03cc47117027604d0a9f029","528e79310c9161f769a282b8d2aa61be2bb332e0cc036a51e44acee5ca7bd66f"]
+BALLDONTLIE_KEYS =["a8d9ab5d-7c93-469a-8c3a-924fd4e5e7b4","8033f045-a2b3-47c6-919a-9141145c742c","3ddaee43-d801-4559-84fd-e233e8f4bb9c","afaca1cf-3bbe-47cc-93f5-6e7a1adfd195","d1559bc7-3ceb-4c0d-8171-0d2298988cf5"]
 TELEGRAM_TOKENS = {"bot1":"8725909088:AAGQMNr-9RVQB7hWmePCLmm0GwaGuzOVy-A","bot2":"8185027087:AAH1JQJKtlWy_oUQpAvqvHEsFIVOK3ScYBc","bot3":"8413563055:AAGyovCDMJOxiAukTbXwaJPm3ZDckIf7qJU"}
 TELEGRAM_TOKEN = TELEGRAM_TOKENS["bot2"]
 CHAT_ID_ADMIN = "-1003814625223"
@@ -33,14 +33,14 @@ class ProvedorHealth:
     def esta_saudavel(self): return self.score > 30 and self.erros_consecutivos < 3
 
 class APIProviderManager:
-    PRIORIDADE_PROVEDORES = ["odds_api","balldontlie"]
+    PRIORIDADE_PROVEDORES =["odds_api","balldontlie"]
     def __init__(self):
         self.chaves_por_provedor = {"odds_api": ODDS_API_KEYS, "balldontlie": BALLDONTLIE_KEYS}
         self.health_por_provedor = {p: ProvedorHealth() for p in self.PRIORIDADE_PROVEDORES}
         self.provedor_atual_idx = 0
     def get_provedor_atual(self):
-        disponiveis = [p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos and self.health_por_provedor[p].esta_saudavel()]
-        if not disponiveis: disponiveis = [p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos]
+        disponiveis =[p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos and self.health_por_provedor[p].esta_saudavel()]
+        if not disponiveis: disponiveis =[p for p in self.PRIORIDADE_PROVEDORES if p not in provedores_falhos]
         if not disponiveis: return None
         disponiveis.sort(key=lambda p: self.health_por_provedor[p].score, reverse=True)
         return disponiveis[0]
@@ -58,7 +58,7 @@ async def rate_limit():
     last_request_time = time.time()
 
 async def enviar_telegram_async(session, texto):
-    for token in [TELEGRAM_TOKENS["bot2"], TELEGRAM_TOKENS["bot1"], TELEGRAM_TOKENS["bot3"]]:
+    for token in[TELEGRAM_TOKENS["bot2"], TELEGRAM_TOKENS["bot1"], TELEGRAM_TOKENS["bot3"]]:
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             payload = {"chat_id": CHAT_ID_ADMIN, "text": texto, "parse_mode": "HTML"}
@@ -99,9 +99,11 @@ def resolver_aposta(aposta, placar):
     selecao, odd, stake = str(aposta['selecao']).upper(), aposta['odd'], aposta['stake']
     h_team = placar.get("home_team", "")
     a_team = placar.get("away_team", "")
-    scores = placar.get("scores", [])
-    h_score = int(next((s.get("score", 0) for s in scores if s.get("name") == h_team), 0) if scores else 0
-    a_score = int(next((s.get("score", 0) for s in scores if s.get("name") == a_team), 0) if scores else 0
+    scores = placar.get("scores",[])
+    
+    # CORREÇÃO APLICADA AQUI: Fechamento dos parênteses da função int()
+    h_score = int(next((s.get("score", 0) for s in scores if s.get("name") == h_team), 0)) if scores else 0
+    a_score = int(next((s.get("score", 0) for s in scores if s.get("name") == a_team), 0)) if scores else 0
     total = h_score + a_score
 
     if esporte == 'soccer':
@@ -123,7 +125,7 @@ def resolver_aposta(aposta, placar):
                 return "RED", -stake, f"Total {total}"
 
     elif esporte == 'basketball':
-        if any(m in mercado for m in ["H2H", "VENCEDOR"]):
+        if any(m in mercado for m in["H2H", "VENCEDOR"]):
             time_ap = identificar_time(selecao, h_team, a_team)
             if time_ap == h_team and h_score > a_score: return "GREEN", (stake * odd) - stake, f"{h_team} venceu"
             if time_ap == a_team and a_score > h_score: return "GREEN", (stake * odd) - stake, f"{a_team} venceu"
@@ -148,7 +150,7 @@ def resolver_aposta(aposta, placar):
     return "PENDENTE", 0, f"Não resolvido: {mercado}"
 
 async def obter_resultados_balldontlie(session):
-    if not BALLDONTLIE_KEYS: return []
+    if not BALLDONTLIE_KEYS: return[]
     for chave in BALLDONTLIE_KEYS:
         try:
             await rate_limit()
@@ -165,9 +167,9 @@ async def obter_resultados_balldontlie(session):
                             "away_team": g["visitor_team"]["full_name"],
                             "scores": [{"name": g["home_team"]["full_name"], "score": g["home_team_score"]},
                                       {"name": g["visitor_team"]["full_name"], "score": g["visitor_team_score"]}]}
-                           for g in data.get("data", []) if g.get("status") == "Final"]
+                           for g in data.get("data",[]) if g.get("status") == "Final"]
         except: continue
-    return []
+    return[]
 
 async def obter_resultados_odds_api(session, sport_key):
     for chave in ODDS_API_KEYS:
@@ -178,7 +180,7 @@ async def obter_resultados_odds_api(session, sport_key):
             async with session.get(url, params=params, timeout=15) as r:
                 if r.status == 200: return await r.json()
         except: continue
-    return []
+    return[]
 
 async def auditoria_completa(session):
     conn = sqlite3.connect(DB_FILE)
@@ -196,7 +198,7 @@ async def auditoria_completa(session):
     basquete = [p for p in pendentes if p['esporte'] == 'basketball']
     print(f"🔍 Auditando: {len(futebol)} Futebol + {len(basquete)} Basquete")
 
-    resultados = []
+    resultados =[]
     if futebol: resultados.extend(await obter_resultados_odds_api(session, "soccer_epl"))
     if basquete: resultados.extend(await obter_resultados_balldontlie(session))
 
